@@ -3,10 +3,10 @@ use std::process::{Command, Stdio};
 
 fn main() {
     println!("\x1b[36;1m=========================================\x1b[0m");
-    println!("\x1b[36;1m      iSCSI Target Setup Utility         \x1b[0m");
+    println!("\x1b[36;1m      iSCSI Target Management Utility    \x1b[0m");
     println!("\x1b[36;1m=========================================\x1b[0m");
 
-    // 1. Check Privilege Level
+    // Check Privilege Level
     let root = is_root();
     if !root {
         println!("\x1b[33m[!] Warning: You are not running as root. We will use 'sudo' for administrative commands.\x1b[0m\n");
@@ -14,16 +14,100 @@ fn main() {
         println!("\x1b[32m[✓] Running with root privileges.\x1b[0m\n");
     }
 
-    // 2. Gather inputs
-    let userid = prompt_non_empty("Enter User ID (used for target/initiator names): ");
-    
-    let password = prompt_password_valid("Enter Password (12-16 characters): ");
-    
-    let username = prompt_non_empty("Enter Username (used for image filename and backstore): ");
+    loop {
+        println!("\n\x1b[36;1m--- Main Menu ---\x1b[0m");
+        println!("1. Setup a new iSCSI Target");
+        println!("2. Delete an existing iSCSI Target and free space");
+        println!("3. Exit");
+        println!("\x1b[36;1m-----------------\x1b[0m");
+        let choice = prompt("Enter your choice (1-3): ");
+        match choice.trim() {
+            "1" => {
+                if ensure_targetcli() {
+                    setup_target();
+                }
+            }
+            "2" => {
+                if ensure_targetcli() {
+                    delete_target();
+                }
+            }
+            "3" => {
+                println!("Exiting. Goodbye!");
+                break;
+            }
+            _ => println!("\x1b[31m[✗] Invalid choice. Please enter 1, 2, or 3.\x1b[0m"),
+        }
+    }
+}
 
+// Check and install targetcli if needed
+fn ensure_targetcli() -> bool {
+    if command_exists("targetcli") {
+        return true;
+    }
+    println!("\n\x1b[33m[!] targetcli is not installed on this system.\x1b[0m");
+    let install = prompt("Would you like to install targetcli-fb using apt now? (y/n) [y]: ");
+    if install.to_lowercase() == "n" {
+        println!("\x1b[31m[✗] targetcli is required to proceed.\x1b[0m");
+        return false;
+    }
+    println!("\x1b[34m[i] Updating package repository...\x1b[0m");
+    if !run_command_with_log("apt-get update", "apt-get", &["update"], true) {
+        println!("\x1b[31m[✗] Failed to update package repository.\x1b[0m");
+        return false;
+    }
+    println!("\x1b[34m[i] Installing targetcli-fb...\x1b[0m");
+    if run_command_with_log(
+        "apt-get install targetcli-fb",
+        "apt-get",
+        &["install", "-y", "targetcli-fb"],
+        true,
+    ) {
+        println!("\x1b[32m[✓] targetcli-fb installed successfully!\x1b[0m");
+        true
+    } else {
+        println!("\x1b[31m[✗] Failed to install targetcli-fb.\x1b[0m");
+        false
+    }
+}
+
+// Restart target service helper
+fn restart_target_service() -> bool {
+    println!("\n\x1b[34m[i] Restarting target service...\x1b[0m");
+    if run_command_with_log("systemctl restart target", "systemctl", &["restart", "target"], true) {
+        return true;
+    }
+    println!("\x1b[33m[!] Note: 'target' service restart failed. Trying 'rtslib-fb-targetctl'...\x1b[0m");
+    if run_command_with_log(
+        "systemctl restart rtslib-fb-targetctl",
+        "systemctl",
+        &["restart", "rtslib-fb-targetctl"],
+        true,
+    ) {
+        return true;
+    }
+    println!("\x1b[33m[!] Note: Trying 'targetcli' service...\x1b[0m");
+    if run_command_with_log(
+        "systemctl restart targetcli",
+        "systemctl",
+        &["restart", "targetcli"],
+        true,
+    ) {
+        return true;
+    }
+    false
+}
+
+// Setup a new iSCSI Target
+fn setup_target() {
+    // Gather inputs
+    let userid = prompt_non_empty("Enter User ID (used for target/initiator names): ");
+    let password = prompt_password_valid("Enter Password (12-16 characters): ");
+    let username = prompt_non_empty("Enter Username (used for image filename and backstore): ");
     let size_mb = prompt_size("Enter Disk Size in MB [default: 1000]: ", 1000);
 
-    // 3. Confirm Details
+    // Confirm Details
     println!("\n\x1b[36;1m--- Configuration Summary ---\x1b[0m");
     println!("User ID:       {}", userid);
     println!("Username:      {}", username);
@@ -35,35 +119,6 @@ fn main() {
     if confirm.to_lowercase() == "n" {
         println!("\x1b[31m[✗] Aborted by user.\x1b[0m");
         return;
-    }
-
-    // 4. Check & Install targetcli if needed
-    if !command_exists("targetcli") {
-        println!("\n\x1b[33m[!] targetcli is not installed on this system.\x1b[0m");
-        let install = prompt("Would you like to install targetcli-fb using apt now? (y/n) [y]: ");
-        if install.to_lowercase() != "n" {
-            println!("\x1b[34m[i] Updating package repository...\x1b[0m");
-            if run_command_with_log("apt-get update", "apt-get", &["update"], true) {
-                println!("\x1b[34m[i] Installing targetcli-fb...\x1b[0m");
-                if run_command_with_log(
-                    "apt-get install targetcli-fb",
-                    "apt-get",
-                    &["install", "-y", "targetcli-fb"],
-                    true,
-                ) {
-                    println!("\x1b[32m[✓] targetcli-fb installed successfully!\x1b[0m");
-                } else {
-                    println!("\x1b[31m[✗] Failed to install targetcli-fb. Exiting.\x1b[0m");
-                    return;
-                }
-            } else {
-                println!("\x1b[31m[✗] Failed to update package repository. Exiting.\x1b[0m");
-                return;
-            }
-        } else {
-            println!("\x1b[31m[✗] targetcli is required to proceed. Exiting.\x1b[0m");
-            return;
-        }
     }
 
     // Step 1: sudo mkdir /var/lib/iscsi_disks
@@ -129,7 +184,6 @@ fn main() {
     }
 
     // Step 5: Configure targetcli
-    // Note: We corrected 'sudo auth' to 'set auth' within the targetcli shell context
     let targetcli_script = format!(
         "cd /\n\
          /backstores/fileio create {username} /var/lib/iscsi_disks/{username}.img\n\
@@ -155,37 +209,70 @@ fn main() {
         return;
     }
 
-    // Step 6: sudo systemctl restart target
-    println!("\n\x1b[34m[i] Restarting target service...\x1b[0m");
-    let mut restarted = false;
-    if run_command_with_log("systemctl restart target", "systemctl", &["restart", "target"], true) {
-        restarted = true;
-    } else {
-        println!("\x1b[33m[!] Note: 'target' service restart failed. Trying 'rtslib-fb-targetctl'...\x1b[0m");
-        if run_command_with_log(
-            "systemctl restart rtslib-fb-targetctl",
-            "systemctl",
-            &["restart", "rtslib-fb-targetctl"],
-            true,
-        ) {
-            restarted = true;
-        } else {
-            println!("\x1b[33m[!] Note: Trying 'targetcli' service...\x1b[0m");
-            if run_command_with_log(
-                "systemctl restart targetcli",
-                "systemctl",
-                &["restart", "targetcli"],
-                true,
-            ) {
-                restarted = true;
-            }
-        }
-    }
-
-    if restarted {
+    // Step 6: Restart target service
+    if restart_target_service() {
         println!("\n\x1b[32;1m[✓] Setup completed successfully!\x1b[0m");
     } else {
         println!("\n\x1b[33;1m[!] Configuration completed, but failed to restart any target service. Please verify the target systemd service manually.\x1b[0m");
+    }
+}
+
+// Delete target and free space
+fn delete_target() {
+    println!("\n\x1b[36;1m--- Delete iSCSI Target & Free Space ---\x1b[0m");
+    let userid = prompt_non_empty("Enter User ID of target to delete: ");
+    let username = prompt_non_empty("Enter Username (used for image filename and backstore): ");
+
+    println!("\n\x1b[33;1m--- Deletion Warning ---\x1b[0m");
+    println!("This will delete:");
+    println!("1. iSCSI Target:  iqn.2003-01.org.linux-iscsi.rahulbhosle.x8664:{}", userid);
+    println!("2. Backstore:     {}", username);
+    println!("3. Disk Image:    /var/lib/iscsi_disks/{}.img (FREEING SPACE)", username);
+    println!("\x1b[33;1m------------------------\x1b[0m");
+    
+    let confirm = prompt("\x1b[31;1mAre you absolutely sure you want to delete this target? (y/n) [n]: \x1b[0m");
+    if confirm.to_lowercase() != "y" {
+        println!("\x1b[31m[✗] Deletion aborted by user.\x1b[0m");
+        return;
+    }
+
+    // Step 1: Run targetcli script to delete target and backstore
+    let targetcli_script = format!(
+        "cd /\n\
+         /iscsi delete iqn.2003-01.org.linux-iscsi.rahulbhosle.x8664:{userid}\n\
+         /backstores/fileio delete {username}\n\
+         saveconfig\n\
+         exit\n",
+        userid = userid,
+        username = username
+    );
+
+    println!("\x1b[34m[i] Removing target configuration from targetcli...\x1b[0m");
+    let _ = run_targetcli_script(&targetcli_script);
+
+    // Step 2: Delete image file to free space
+    let img_path = format!("/var/lib/iscsi_disks/{}.img", username);
+    if std::path::Path::new(&img_path).exists() {
+        println!("\x1b[34m[i] Deleting image file {} to free space...\x1b[0m", img_path);
+        if run_command_with_log(
+            "Delete image file",
+            "rm",
+            &["-f", &img_path],
+            true,
+        ) {
+            println!("\x1b[32m[✓] Successfully deleted image file and freed space.\x1b[0m");
+        } else {
+            println!("\x1b[31m[✗] Failed to delete image file.\x1b[0m");
+        }
+    } else {
+        println!("\x1b[33m[!] Image file {} does not exist. Nothing to free.\x1b[0m", img_path);
+    }
+
+    // Step 3: Restart target service
+    if restart_target_service() {
+        println!("\n\x1b[32;1m[✓] Cleanup and deletion completed successfully!\x1b[0m");
+    } else {
+        println!("\n\x1b[33;1m[!] Cleanup completed, but failed to restart any target service. Please verify the target systemd service manually.\x1b[0m");
     }
 }
 
