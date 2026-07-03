@@ -1,3 +1,5 @@
+mod dcv;
+
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
@@ -16,11 +18,13 @@ fn main() {
 
     loop {
         println!("\n\x1b[36;1m--- Main Menu ---\x1b[0m");
-        println!("1. Setup a new iSCSI Target");
-        println!("2. Delete an existing iSCSI Target and free space");
-        println!("3. Exit");
+        println!("1. Setup a new iSCSI Target (Local Target Only)");
+        println!("2. Delete an existing iSCSI Target (Local Target Only)");
+        println!("3. Interactive Single-Node Lustre Role Setup");
+        println!("4. Multi-Node Cluster Orchestrator (One-Shot Deploy/Teardown)");
+        println!("5. Exit");
         println!("\x1b[36;1m-----------------\x1b[0m");
-        let choice = prompt("Enter your choice (1-3): ");
+        let choice = prompt("Enter your choice (1-5): ");
         match choice.trim() {
             "1" => {
                 if ensure_targetcli() {
@@ -33,13 +37,20 @@ fn main() {
                 }
             }
             "3" => {
+                dcv::run_interactive_installer();
+            }
+            "4" => {
+                dcv::run_orchestrator();
+            }
+            "5" => {
                 println!("Exiting. Goodbye!");
                 break;
             }
-            _ => println!("\x1b[31m[✗] Invalid choice. Please enter 1, 2, or 3.\x1b[0m"),
+            _ => println!("\x1b[31m[✗] Invalid choice. Please enter 1, 2, 3, 4, or 5.\x1b[0m"),
         }
     }
 }
+
 
 // Check and install targetcli if needed
 fn ensure_targetcli() -> bool {
