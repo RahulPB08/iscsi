@@ -72,7 +72,7 @@ fn ensure_targetcli() -> bool {
     }
 }
 
-// Restart target service helper
+
 fn restart_target_service() -> bool {
     println!("\n\x1b[34m[i] Restarting target service...\x1b[0m");
     if run_command_with_log("systemctl restart target", "systemctl", &["restart", "target"], true) {
