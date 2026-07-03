@@ -28,3 +28,31 @@ usig this it will run these command
     5.93`exit`
 
 6.`sudo systemctl restart target` 
+
+## Deletion & Clean-up Commands
+To delete an iSCSI target and free up the disk space:
+
+1. Run `targetcli` to remove the target definition and backstore:
+   ```bash
+   sudo targetcli
+   ```
+   Within the `targetcli` prompt, run:
+   - Go to root:
+     `cd /`
+   - Delete the iSCSI target (this will delete all associated LUNs, ACLs, and TPGs):
+     `/iscsi delete iqn.2003-01.org.linux-iscsi.rahulbhosle.x8664:{userid}`
+   - Delete the backstore:
+     `/backstores/fileio delete {username}`
+   - Save configuration and exit:
+     `saveconfig`
+     `exit`
+
+2. Delete the allocated image file to free up disk space:
+   ```bash
+   sudo rm -f /var/lib/iscsi_disks/{username}.img
+   ```
+
+3. Restart the target service to apply changes:
+   ```bash
+   sudo systemctl restart target
+   ```
