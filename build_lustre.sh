@@ -59,7 +59,7 @@ fi
 rm -f /etc/yum.repos.d/lustre-*.repo
 
 clear
-banner "Lustre Kernel Module Builder  v2.2"
+banner "Lustre Kernel Module Builder  v2.4"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -95,10 +95,10 @@ RPM_DIR="/tmp/lustre_rpms"
 mkdir -p "$RPM_DIR"
 rm -f "$RPM_DIR"/*.rpm
 
-# Locked production mirror configuration maps directly to verified archives
-WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.8/server/RPMS/x86_64"
+# Target verified production vault channels instead of volatile CI structures
+WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.10/server/RPMS/x86_64"
 EPEL_URL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
-K_VERSION="4.18.0-477.27.1.el8_lustre.x86_64"
+K_VERSION="4.18.0-553.5.1.el8_10.x86_64"
 
 declare -a KERNEL_PACKAGES=(
     "kernel-${K_VERSION}.rpm"
