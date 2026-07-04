@@ -55,11 +55,10 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Scrub any broken repository index files from previous attempts
 rm -f /etc/yum.repos.d/lustre-*.repo
 
 clear
-banner "Lustre Kernel Module Builder  v2.0"
+banner "Lustre Kernel Module Builder  v2.1"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -95,36 +94,47 @@ RPM_DIR="/tmp/lustre_rpms"
 mkdir -p "$RPM_DIR"
 rm -f "$RPM_DIR"/*.rpm
 
-# Target stable release paths for Rocky Linux 8 systems
-WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.10/server/RPMS/x86_64"
+# Detect pathing by testing server availability dynamically
 EPEL_URL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
-K_VERSION="4.18.0-553.5.1.el8_10.x86_64"
+
+if curl --output /dev/null --silent --head --fail "https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.9/server/RPMS/x86_64/kernel-headers-4.18.0-513.18.1.el8_lustre.x86_64.rpm"; then
+    WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.9/server/RPMS/x86_64"
+    K_VERSION="4.18.0-513.18.1.el8_lustre.x86_64"
+else
+    # Universal fallback stable vault endpoint
+    WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8/server/RPMS/x86_64"
+    K_VERSION="4.18.0-477.27.1.el8_lustre.x86_64"
+fi
+
+info "Selected mirror source: ${WHAM_URL}"
+info "Selected kernel target: ${K_VERSION}"
 
 declare -a KERNEL_PACKAGES=(
-    "kernel-4.18.0-553.5.1.el8_10.x86_64.rpm"
-    "kernel-core-4.18.0-553.5.1.el8_10.x86_64.rpm"
-    "kernel-devel-4.18.0-553.5.1.el8_10.x86_64.rpm"
-    "kernel-headers-4.18.0-553.5.1.el8_10.x86_64.rpm"
-    "kernel-modules-4.18.0-553.5.1.el8_10.x86_64.rpm"
-    "kernel-modules-internal-4.18.0-553.5.1.el8_10.x86_64.rpm"
+    "kernel-${K_VERSION}.rpm"
+    "kernel-core-${K_VERSION}.rpm"
+    "kernel-devel-${K_VERSION}.rpm"
+    "kernel-headers-${K_VERSION}.rpm"
+    "kernel-modules-${K_VERSION}.rpm"
+    "kernel-modules-internal-${K_VERSION}.rpm"
 )
 
 step "Downloading explicit kernel packages with network recovery..."
 for package in "${KERNEL_PACKAGES[@]}"; do
     info "Fetching ${package}..."
-    # Using curl with explicit retry limits protects the downloads against VirtualBox soft-lockup glitches
-    if ! curl -L --retry 5 --connect-timeout 30 -o "$RPM_DIR/$package" "${WHAM_URL}/${package}"; then
-        fail "Network drop encountered while fetching ${package}."
+    if ! curl -L --fail --retry 5 --connect-timeout 30 -o "$RPM_DIR/$package" "${WHAM_URL}/${package}"; then
+        fail "Failed download stream for ${package}. Mirror path structures may have drifted."
         exit 1
     fi
 done
 
 step "Downloading supplemental system testing tools..."
-curl -L --retry 5 --connect-timeout 30 -o "$RPM_DIR/p7zip.rpm" "${EPEL_URL}/p/p7zip-16.02-20.el8.x86_64.rpm"
-curl -L --retry 5 --connect-timeout 30 -o "$RPM_DIR/quilt.rpm" "${EPEL_URL}/q/quilt-0.66-2.el8.noarch.rpm"
+curl -L --fail --retry 5 --connect-timeout 30 -o "$RPM_DIR/p7zip.rpm" "${EPEL_URL}/p/p7zip-16.02-20.el8.x86_64.rpm" || \
+    curl -L --fail -o "$RPM_DIR/p7zip.rpm" "https://downloads.datastax.com/enterprise/p7zip-16.02-20.el8.x86_64.rpm"
+
+curl -L --fail --retry 5 --connect-timeout 30 -o "$RPM_DIR/quilt.rpm" "${EPEL_URL}/q/quilt-0.66-2.el8.noarch.rpm" || \
+    curl -L --fail -o "$RPM_DIR/quilt.rpm" "https://vault.centos.org/centos/8/AppStream/x86_64/os/Packages/quilt-0.66-2.el8.noarch.rpm"
 
 step "Injecting packages directly via RPM subsystem..."
-# Using rpm directly completely bypasses DNF metadata parsing loops
 if rpm -ivh --nodeps --force "$RPM_DIR"/*.rpm; then
     ok "Lustre-patched kernel packages successfully installed."
 else
@@ -172,7 +182,6 @@ if [[ -d "$LUSTRE_SRC/.git" ]]; then
 else
     step "Cloning Lustre repository to $LUSTRE_SRC..."
     mkdir -p "$LUSTRE_SRC"
-    # Using standard public HTTPS cloning removes all root SSH credential blocks
     if git clone https://github.com/lustre/lustre-release.git "$LUSTRE_SRC"; then
         ok "Lustre repository cloned via HTTPS."
     else
