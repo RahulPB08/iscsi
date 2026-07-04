@@ -55,11 +55,11 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Clean out old, broken customized tracking configurations completely
+# Clean out old tracking configuration files from previous attempts
 rm -f /etc/yum.repos.d/lustre-*.repo
 
 clear
-banner "Lustre Kernel Module Builder  v1.6"
+banner "Lustre Kernel Module Builder  v1.7"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -88,38 +88,46 @@ else
     exit 1
 fi
 
-# ── Phase 2: Lustre kernel packages via Repository ──────────────────────────
-phase 2 "Configuring Repositories & Deploying Lustre Kernel Module Stack"
+# ── Phase 2: Lustre kernel packages ──────────────────────────────────────────
+phase 2 "Downloading & Installing Lustre-Patched Kernel Packages"
 
-step "Adding EPEL system package engine..."
-dnf install -y epel-release &>/dev/null
+RPM_DIR="/tmp/lustre_rpms"
+mkdir -p "$RPM_DIR"
+rm -f "$RPM_DIR"/*.rpm
 
-step "Injecting live Whamcloud Lustre repository map..."
-# Dynamically parsing the live package list cuts out hardcoded URL dependencies completely
-cat << 'EOF' > /etc/yum.repos.d/lustre-server.repo
-[lustre-server]
-name=Lustre Server Stable Release
-baseurl=https://downloads.whamcloud.com/public/lustre/latest-2.15-release/el8/server/RPMS/x86_64/
-gpgcheck=0
-enabled=1
-proxy=_none_
-EOF
+# Stable, permanent vault URLs matching the exact wiki spec for EL8.9 architecture
+WHAM_VAULT="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.9/server/RPMS/x86_64"
+EPEL_VAULT="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
+K_VER="4.18.0-513.18.1.el8_lustre.x86_64"
 
-# Ensure dnf pulls newly introduced package paths immediately
-dnf makecache --disablerepo=* --enablerepo=lustre-server -y &>/dev/null
+step "Downloading exact Lustre kernel RPMs into local cache..."
+declare -a K_PKGS=(
+    "kernel-${K_VER}.rpm"
+    "kernel-core-${K_VER}.rpm"
+    "kernel-devel-${K_VER}.rpm"
+    "kernel-headers-${K_VER}.rpm"
+    "kernel-modules-${K_VER}.rpm"
+    "kernel-modules-internal-${K_VER}.rpm"
+)
 
-step "Installing kernel packages from the dynamic repository stream..."
-if dnf install -y --nogpgcheck --enablerepo=lustre-server \
-    kernel \
-    kernel-core \
-    kernel-devel \
-    kernel-headers \
-    kernel-modules \
-    kernel-modules-internal \
-    p7zip quilt; then
-    ok "Lustre-patched kernel packages successfully configured."
+for pkg in "${K_PKGS[@]}"; do
+    info "Downloading ${pkg}..."
+    if ! wget -q -O "$RPM_DIR/$pkg" "${WHAM_VAULT}/${pkg}"; then
+        fail "Failed to download ${pkg} from vault."
+        exit 1
+    fi
+done
+
+step "Downloading supplemental EPEL dependencies..."
+wget -q -O "$RPM_DIR/p7zip.rpm" "${EPEL_VAULT}/p/p7zip-16.02-20.el8.x86_64.rpm" || wget -q -O "$RPM_DIR/p7zip.rpm" "https://downloads.datastax.com/enterprise/p7zip-16.02-20.el8.x86_64.rpm"
+wget -q -O "$RPM_DIR/quilt.rpm" "${EPEL_VAULT}/q/quilt-0.66-2.el8.noarch.rpm" || wget -q -O "$RPM_DIR/quilt.rpm" "https://vault.centos.org/centos/8/AppStream/x86_64/os/Packages/quilt-0.66-2.el8.noarch.rpm"
+
+step "Executing isolated local installation transaction..."
+# Disabling network repository checks prevents DNF metadata sync errors entirely
+if dnf localinstall -y --nogpgcheck --disablerepo=* "$RPM_DIR"/*.rpm; then
+    ok "Lustre-patched kernel packages successfully installed."
 else
-    fail "Repository installation transaction failed. Verify internet routing."
+    fail "Local DNF package injection failed."
     exit 1
 fi
 
@@ -142,7 +150,7 @@ else
 fi
 
 step "Upgrading e2fsprogs tools to modified Lustre version..."
-if dnf update -y e2fsprogs 2>&1 | tail -3; then
+if dnf update -y --disablerepo=* --enablerepo=baseos,appstream,Lustre-e2fsprogs e2fsprogs 2>&1 | tail -3; then
     ok "e2fsprogs updated successfully."
 else
     fail "e2fsprogs update target failed."
@@ -180,8 +188,7 @@ else
     exit 1
 fi
 
-# Dynamically scrape for the freshly deployed target header footprint
-LUSTRE_KERNEL_DIR=$(ls -d /usr/src/kernels/*_lustre* | head -n 1)
+LUSTRE_KERNEL_DIR="/usr/src/kernels/${K_VER}"
 
 step "Running ./configure linking headers at: ${LUSTRE_KERNEL_DIR}..."
 if ./configure --with-linux="${LUSTRE_KERNEL_DIR}" 2>&1 | tail -5; then
