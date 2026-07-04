@@ -114,31 +114,36 @@ fi
 
 echo ""
 
-# ── Step 2: Install targetcli-fb ─────────────────────────────────────────────
-step "[2/3] Installing targetcli-fb..."
+# ── Step 2: Install targetcli ─────────────────────────────────────────────────
+step "[2/3] Installing targetcli..."
 
 if command -v targetcli &>/dev/null; then
     ok "targetcli is already installed on this system."
     info "Version: $(targetcli version 2>/dev/null || echo 'unknown')"
 else
-    $PKG_MGR install -y targetcli-fb &>/tmp/iscsi_install.log &
+    # Determine the correct package name based on the package manager
+    if [[ "$PKG_MGR" == "apt-get" ]]; then
+        PKG_NAME="targetcli-fb"
+    else
+        PKG_NAME="targetcli"
+    fi
+
+    $PKG_MGR install -y "$PKG_NAME" &>/tmp/iscsi_install.log &
     BGPID=$!
-    spinner $BGPID "Downloading and installing targetcli-fb..."
+    spinner $BGPID "Downloading and installing ${PKG_NAME}..."
 
     if wait $BGPID; then
-        ok "targetcli-fb installed successfully."
+        ok "${PKG_NAME} installed successfully."
     else
         fail "Package installation failed."
         echo ""
         echo -e "${RED}  Last 10 lines of install log:${RESET}"
         tail -10 /tmp/iscsi_install.log
         echo ""
-        fail "Cannot continue without targetcli-fb."
+        fail "Cannot continue without targetcli."
         exit 1
     fi
 fi
-
-echo ""
 
 # ── Step 3: Enable & start target service ────────────────────────────────────
 step "[3/3] Enabling and starting the 'target' service..."
