@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  build_lustre.sh — Lustre Kernel Module Builder
+#  build_lustre.sh — Lustre Kernel Module Builder (Complete & Fixed)
 #  Compiles and installs Lustre from source on RHEL 8 / Rocky Linux 8.
 #  Run this on the MGS/MDS and OSS nodes BEFORE running the Rust orchestrator.
 # =============================================================================
@@ -32,11 +32,11 @@ phase() {
     echo ""
 }
 
-step()    { echo -e "${CYAN}  ▶  $*${RESET}"; }
-ok()      { echo -e "${GREEN}  ✔  $*${RESET}"; }
-warn()    { echo -e "${YELLOW}  ⚠  $*${RESET}"; }
-fail()    { echo -e "${RED}  ✖  $*${RESET}"; }
-info()    { echo -e "${DIM}     $*${RESET}"; }
+step()   { echo -e "${CYAN}  ▶  $*${RESET}"; }
+ok()     { echo -e "${GREEN}  ✔  $*${RESET}"; }
+warn()   { echo -e "${YELLOW}  ⚠  $*${RESET}"; }
+fail()   { echo -e "${RED}  ✖  $*${RESET}"; }
+info()   { echo -e "${DIM}     $*${RESET}"; }
 
 confirm() {
     local prompt="$1"
@@ -50,22 +50,6 @@ confirm() {
     [[ "${answer,,}" == "y" ]]
 }
 
-run_step() {
-    local desc="$1"; shift
-    step "$desc"
-    if "$@" &>/dev/null; then
-        ok "$desc"
-    else
-        fail "$desc"
-        echo -e "${RED}${BOLD}     Command failed: $*${RESET}"
-        echo ""
-        if ! confirm "This step failed. Continue anyway?"; then
-            fail "Aborting build."
-            exit 1
-        fi
-    fi
-}
-
 # ── Root check ────────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     fail "This script must be run as root."
@@ -75,7 +59,7 @@ fi
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 clear
-banner "Lustre Kernel Module Builder  v1.0"
+banner "Lustre Kernel Module Builder  v1.1"
 
 echo -e "${DIM}  This script will:${RESET}"
 echo -e "${DIM}  1. Install build tools & dev libraries${RESET}"
@@ -117,23 +101,25 @@ fi
 # ── Phase 2: Lustre kernel packages ──────────────────────────────────────────
 phase 2 "Downloading Lustre-Patched Kernel Packages"
 
-WHAM="https://build.whamcloud.com/job/lustre-master/arch=x86_64,build_type=server,distro=el8.9,ib_stack=inkernel/lastSuccessfulBuild/artifact/artifacts/RPMS/x86_64"
+# Stable vault release URL matching EL8 minor version targets
+WHAM="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.8/server/RPMS/x86_64"
 EPEL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
+KERN_VER="4.18.0-477.27.1.el8_lustre.x86_64"
 
-step "Fetching packages from Whamcloud & EPEL (this may take a minute)..."
+step "Fetching packages from Whamcloud & EPEL vaults..."
 if dnf install -y \
-    "${WHAM}/kernel-4.18.0-513.18.1.el8_lustre.x86_64.rpm" \
-    "${WHAM}/kernel-core-4.18.0-513.18.1.el8_lustre.x86_64.rpm" \
-    "${WHAM}/kernel-devel-4.18.0-513.18.1.el8_lustre.x86_64.rpm" \
-    "${WHAM}/kernel-headers-4.18.0-513.18.1.el8_lustre.x86_64.rpm" \
-    "${WHAM}/kernel-modules-4.18.0-513.18.1.el8_lustre.x86_64.rpm" \
-    "${WHAM}/kernel-modules-internal-4.18.0-513.18.1.el8_lustre.x86_64.rpm" \
+    "${WHAM}/kernel-${KERN_VER}.rpm" \
+    "${WHAM}/kernel-core-${KERN_VER}.rpm" \
+    "${WHAM}/kernel-devel-${KERN_VER}.rpm" \
+    "${WHAM}/kernel-headers-${KERN_VER}.rpm" \
+    "${WHAM}/kernel-modules-${KERN_VER}.rpm" \
+    "${WHAM}/kernel-modules-internal-${KERN_VER}.rpm" \
     "${EPEL}/p/p7zip-16.02-20.el8.x86_64.rpm" \
-    "${EPEL}/q/quilt-0.66-2.el8.noarch.rpm" 2>&1 | tail -5; then
+    "${EPEL}/q/quilt-0.66-2.el8.noarch.rpm"; then
     ok "Lustre-patched kernel packages installed."
 else
     fail "Package download/install failed."
-    warn "Check your internet connection and that the Whamcloud build server is reachable."
+    warn "Verify your networking or check path updates on downloads.whamcloud.com"
     exit 1
 fi
 
@@ -141,7 +127,7 @@ fi
 phase 3 "Configuring Lustre e2fsprogs Repository"
 
 step "Appending Lustre-e2fsprogs repo to /etc/dnf/dnf.conf..."
-if ! grep -q "Lustre-e2fsprogs" /etc/dnf/dnf.conf; then
+if ! grep -q "Lustre-e2fsprogs" /etc/etc/dnf/dnf.conf 2>/dev/null && ! grep -q "Lustre-e2fsprogs" /etc/dnf/dnf.conf; then
     tee -a /etc/dnf/dnf.conf > /dev/null << 'EOF'
 
 [Lustre-e2fsprogs]
@@ -178,10 +164,11 @@ else
     step "Cloning Lustre repository to $LUSTRE_SRC..."
     mkdir -p "$LUSTRE_SRC"
     chmod 777 "$LUSTRE_SRC"
-    if git clone git@github.com:lustre/lustre-release.git "$LUSTRE_SRC" 2>&1 | tail -3; then
+    # Using public HTTPS instead of SSH key protocol to bypass sudo permission blocks
+    if git clone https://github.com/lustre/lustre-release.git "$LUSTRE_SRC"; then
         ok "Lustre repository cloned."
     else
-        fail "git clone failed. Check SSH key access to GitHub."
+        fail "git clone failed via HTTPS connection."
         exit 1
     fi
 fi
@@ -195,11 +182,11 @@ else
     exit 1
 fi
 
-step "Running ./configure (this may take a few minutes)..."
-if ./configure 2>&1 | tail -5; then
+step "Running ./configure targeting Lustre kernel headers..."
+if ./configure --with-linux=/usr/src/kernels/${KERN_VER} 2>&1 | tail -5; then
     ok "configure completed."
 else
-    fail "configure failed. Check for missing dependencies above."
+    fail "configure failed. Check configuration flags or dependencies above."
     exit 1
 fi
 
