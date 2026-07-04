@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 fn main() {
     println!("\x1b[36;1m=========================================\x1b[0m");
-    println!("\x1b[36;1m      iSCSI Target Management Utility    \x1b[0m");
+    println!("\x1b[36;1m   Lustre & iSCSI Storage Orchestrator   \x1b[0m");
     println!("\x1b[36;1m=========================================\x1b[0m");
 
     // Check Privilege Level
@@ -18,13 +18,17 @@ fn main() {
 
     loop {
         println!("\n\x1b[36;1m--- Main Menu ---\x1b[0m");
-        println!("1. Setup a new iSCSI Target (Local Target Only)");
-        println!("2. Delete an existing iSCSI Target (Local Target Only)");
-        println!("3. Interactive Single-Node Lustre Role Setup");
-        println!("4. Multi-Node Cluster Orchestrator (One-Shot Deploy/Teardown)");
-        println!("5. Exit");
+        println!("1. Create iSCSI Target (Local Target Server)");
+        println!("2. Delete iSCSI Target (Local Target Server)");
+        println!("3. Configure Lustre MGS Server");
+        println!("4. Configure Lustre MDS Server");
+        println!("5. Configure Lustre OSS Server (Object Storage Server / OST)");
+        println!("6. Connect as Storage Client (Mount LustreFS)");
+        println!("7. Unmount & Release Storage (Safe Teardown)");
+        println!("8. Multi-Node Cluster Orchestrator (One-Shot Deploy/Teardown)");
+        println!("9. Exit");
         println!("\x1b[36;1m-----------------\x1b[0m");
-        let choice = prompt("Enter your choice (1-5): ");
+        let choice = prompt("Enter your choice (1-9): ");
         match choice.trim() {
             "1" => {
                 if ensure_targetcli() {
@@ -37,20 +41,48 @@ fn main() {
                 }
             }
             "3" => {
-                dcv::run_interactive_installer();
+                if ensure_iscsi_initiator() {
+                    let _ = dcv::setup_iscsi();
+                    if let Err(e) = dcv::configure_mgs() {
+                        println!("\x1b[31m[✗] Failed to configure MGS: {}\x1b[0m", e);
+                    }
+                }
             }
             "4" => {
-                dcv::run_orchestrator();
+                if ensure_iscsi_initiator() {
+                    let _ = dcv::setup_iscsi();
+                    if let Err(e) = dcv::configure_mds() {
+                        println!("\x1b[31m[✗] Failed to configure MDS: {}\x1b[0m", e);
+                    }
+                }
             }
             "5" => {
+                if ensure_iscsi_initiator() {
+                    let _ = dcv::setup_iscsi();
+                    if let Err(e) = dcv::configure_oss() {
+                        println!("\x1b[31m[✗] Failed to configure OSS: {}\x1b[0m", e);
+                    }
+                }
+            }
+            "6" => {
+                if let Err(e) = dcv::configure_client() {
+                    println!("\x1b[31m[✗] Failed to mount Client: {}\x1b[0m", e);
+                }
+            }
+            "7" => {
+                unmount_and_release();
+            }
+            "8" => {
+                dcv::run_orchestrator();
+            }
+            "9" => {
                 println!("Exiting. Goodbye!");
                 break;
             }
-            _ => println!("\x1b[31m[✗] Invalid choice. Please enter 1, 2, 3, 4, or 5.\x1b[0m"),
+            _ => println!("\x1b[31m[✗] Invalid choice. Please enter a choice between 1 and 9.\x1b[0m"),
         }
     }
 }
-
 
 // Check and install targetcli if needed
 fn ensure_targetcli() -> bool {
@@ -58,31 +90,195 @@ fn ensure_targetcli() -> bool {
         return true;
     }
     println!("\n\x1b[33m[!] targetcli is not installed on this system.\x1b[0m");
-    let install = prompt("Would you like to install targetcli-fb using apt now? (y/n) [y]: ");
-    if install.to_lowercase() == "n" {
-        println!("\x1b[31m[✗] targetcli is required to proceed.\x1b[0m");
-        return false;
-    }
-    println!("\x1b[34m[i] Updating package repository...\x1b[0m");
-    if !run_command_with_log("apt-get update", "apt-get", &["update"], true) {
-        println!("\x1b[31m[✗] Failed to update package repository.\x1b[0m");
-        return false;
-    }
-    println!("\x1b[34m[i] Installing targetcli-fb...\x1b[0m");
-    if run_command_with_log(
-        "apt-get install targetcli-fb",
-        "apt-get",
-        &["install", "-y", "targetcli-fb"],
-        true,
-    ) {
-        println!("\x1b[32m[✓] targetcli-fb installed successfully!\x1b[0m");
-        true
+
+    // Auto-detect package manager
+    let has_dnf = command_exists("dnf");
+    let has_apt = command_exists("apt-get");
+
+    let pkg_mgr = if has_dnf {
+        "dnf"
+    } else if has_apt {
+        "apt"
     } else {
-        println!("\x1b[31m[✗] Failed to install targetcli-fb.\x1b[0m");
-        false
+        println!("\x1b[31m[✗] Neither dnf nor apt-get found on this system. Please install targetcli-fb manually.\x1b[0m");
+        return false;
+    };
+
+    let install = prompt(&format!("Would you like to install targetcli-fb using {} now? (y/n) [y]: ", pkg_mgr));
+    if install.to_lowercase() == "n" {
+        println!("\x1b[31m[✗] targetcli-fb is required to proceed.\x1b[0m");
+        return false;
+    }
+
+    if pkg_mgr == "dnf" {
+        println!("\x1b[34m[i] Installing targetcli-fb via dnf...\x1b[0m");
+        if run_command_with_log(
+            "dnf install targetcli-fb",
+            "dnf",
+            &["install", "-y", "targetcli-fb"],
+            true,
+        ) {
+            println!("\x1b[32m[✓] targetcli-fb installed successfully!\x1b[0m");
+            true
+        } else {
+            println!("\x1b[31m[✗] Failed to install targetcli-fb.\x1b[0m");
+            false
+        }
+    } else {
+        println!("\x1b[34m[i] Updating package repository...\x1b[0m");
+        if !run_command_with_log("apt-get update", "apt-get", &["update"], true) {
+            println!("\x1b[31m[✗] Failed to update package repository.\x1b[0m");
+            return false;
+        }
+        println!("\x1b[34m[i] Installing targetcli-fb via apt...\x1b[0m");
+        if run_command_with_log(
+            "apt-get install targetcli-fb",
+            "apt-get",
+            &["install", "-y", "targetcli-fb"],
+            true,
+        ) {
+            println!("\x1b[32m[✓] targetcli-fb installed successfully!\x1b[0m");
+            true
+        } else {
+            println!("\x1b[31m[✗] Failed to install targetcli-fb.\x1b[0m");
+            false
+        }
     }
 }
 
+// Check and install iSCSI Initiator if needed
+fn ensure_iscsi_initiator() -> bool {
+    if command_exists("iscsiadm") {
+        // Ensure services are started
+        let service_name = if command_exists("dnf") { "iscsid" } else { "open-iscsi" };
+        let _ = run_command_with_log(&format!("Enable {} service", service_name), "systemctl", &["enable", service_name], true);
+        let _ = run_command_with_log(&format!("Start {} service", service_name), "systemctl", &["restart", service_name], true);
+        return true;
+    }
+    println!("\n\x1b[33m[!] iSCSI initiator (iscsiadm) is not installed on this system.\x1b[0m");
+
+    // Auto-detect package manager
+    let has_dnf = command_exists("dnf");
+    let has_apt = command_exists("apt-get");
+
+    let pkg_mgr = if has_dnf {
+        "dnf"
+    } else if has_apt {
+        "apt"
+    } else {
+        println!("\x1b[31m[✗] Neither dnf nor apt-get found. Please install iscsi initiator manually.\x1b[0m");
+        return false;
+    };
+
+    let install = prompt(&format!("Would you like to install the iSCSI initiator using {} now? (y/n) [y]: ", pkg_mgr));
+    if install.to_lowercase() == "n" {
+        println!("\x1b[31m[✗] iSCSI initiator is required to proceed.\x1b[0m");
+        return false;
+    }
+
+    if pkg_mgr == "dnf" {
+        if run_command_with_log(
+            "dnf install iscsi-initiator-utils",
+            "dnf",
+            &["install", "-y", "iscsi-initiator-utils"],
+            true,
+        ) {
+            let _ = run_command_with_log("Enable iscsid service", "systemctl", &["enable", "iscsid"], true);
+            let _ = run_command_with_log("Start iscsid service", "systemctl", &["restart", "iscsid"], true);
+            true
+        } else {
+            println!("\x1b[31m[✗] Failed to install iscsi-initiator-utils.\x1b[0m");
+            false
+        }
+    } else {
+        if run_command_with_log(
+            "apt-get install open-iscsi",
+            "apt-get",
+            &["install", "-y", "open-iscsi"],
+            true,
+        ) {
+            let _ = run_command_with_log("Enable open-iscsi service", "systemctl", &["enable", "open-iscsi"], true);
+            let _ = run_command_with_log("Start open-iscsi service", "systemctl", &["restart", "open-iscsi"], true);
+            true
+        } else {
+            println!("\x1b[31m[✗] Failed to install open-iscsi.\x1b[0m");
+            false
+        }
+    }
+}
+
+// Unmount and release storage
+fn unmount_and_release() {
+    println!("\n\x1b[36;1m=========================================\x1b[0m");
+    println!("\x1b[36;1m       Unmount & Release Storage         \x1b[0m");
+    println!("\x1b[36;1m=========================================\x1b[0m");
+
+    // 1. Detect active Lustre mount points and unmount them
+    let active_mounts = get_active_lustre_mounts();
+    if active_mounts.is_empty() {
+        println!("[i] No active Lustre filesystem mounts detected.");
+    } else {
+        println!("[i] Detected active Lustre mounts: {:?}", active_mounts);
+        let confirm = prompt("Would you like to unmount all detected Lustre filesystems? (y/n) [y]: ");
+        if confirm.to_lowercase() != "n" {
+            for mnt in active_mounts {
+                println!("[+] Unmounting {}...", mnt);
+                if run_command_with_log(&format!("Unmount {}", mnt), "umount", &["-f", &mnt], true) {
+                    println!("\x1b[32m[✓] Unmounted {} successfully.\x1b[0m", mnt);
+                } else {
+                    println!("\x1b[33m[!] Failed to unmount {}. You might need to manually stop processes using the mount.\x1b[0m", mnt);
+                }
+            }
+        }
+    }
+
+    // 2. Disconnect/logout from active iSCSI targets
+    if command_exists("iscsiadm") {
+        // Check if there are active sessions
+        let check_session = Command::new("sudo").args(&["iscsiadm", "-m", "session"]).output();
+        let has_sessions = match check_session {
+            Ok(output) => output.status.success() && !output.stdout.is_empty(),
+            Err(_) => false,
+        };
+
+        if has_sessions {
+            println!("\n[i] Active iSCSI sessions detected.");
+            let confirm = prompt("Would you like to log out of all active iSCSI sessions? (y/n) [y]: ");
+            if confirm.to_lowercase() != "n" {
+                println!("[+] Logging out of active iSCSI sessions...");
+                if run_command_with_log("iSCSI logout", "iscsiadm", &["-m", "node", "--logout"], true) {
+                    println!("\x1b[32m[✓] Logged out of iSCSI sessions successfully.\x1b[0m");
+                } else {
+                    println!("\x1b[31m[✗] Failed to logout of iSCSI sessions.\x1b[0m");
+                }
+            }
+        }
+    }
+
+    // 3. Optional local target deletion
+    if command_exists("targetcli") {
+        println!("\n[i] This system has targetcli installed.");
+        let confirm = prompt("Would you like to delete a local iSCSI target and free storage now? (y/n) [n]: ");
+        if confirm.to_lowercase() == "y" {
+            delete_target();
+        }
+    }
+
+    println!("\n\x1b[32;1m[✓] Unmount & Release routine complete!\x1b[0m");
+}
+
+fn get_active_lustre_mounts() -> Vec<String> {
+    let mut mounts = Vec::new();
+    if let Ok(content) = std::fs::read_to_string("/proc/mounts") {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 && parts[2] == "lustre" {
+                mounts.push(parts[1].to_string());
+            }
+        }
+    }
+    mounts
+}
 
 fn restart_target_service() -> bool {
     println!("\n\x1b[34m[i] Restarting target service...\x1b[0m");

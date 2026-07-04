@@ -168,16 +168,20 @@ sudo ./target/release/iscsi_setup
 You will be greeted with the interactive main menu:
 
 ```
-╔══════════════════════════════════════════╗
-║      iSCSI Target Management Utility     ║
-╚══════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════╗
+║           Lustre & iSCSI Storage Orchestrator            ║
+╚══════════════════════════════════════════════════════════╝
 
 --- Main Menu ---
-1. Setup a new iSCSI Target        (Local Target Only)
-2. Delete an existing iSCSI Target (Local Target Only)
-3. Interactive Single-Node Lustre Role Setup
-4. Multi-Node Cluster Orchestrator  (One-Shot Deploy/Teardown)
-5. Exit
+1. Create iSCSI Target (Local Target Server)
+2. Delete iSCSI Target (Local Target Server)
+3. Configure Lustre MGS Server
+4. Configure Lustre MDS Server
+5. Configure Lustre OSS Server (Object Storage Server / OST)
+6. Connect as Storage Client (Mount LustreFS)
+7. Unmount & Release Storage (Safe Teardown)
+8. Multi-Node Cluster Orchestrator (One-Shot Deploy/Teardown)
+9. Exit
 ```
 
 ### 5. One-Shot Cluster Deploy

@@ -320,40 +320,6 @@ pub fn configure_client() -> Result<(), String> {
     Ok(())
 }
 
-/// Single-Node interactive menu
-pub fn run_interactive_installer() {
-    println!("\n=======================================================");
-    println!("     Interactive Single-Node Role Setup Menu           ");
-    println!("=======================================================");
-
-    // All architectures must connect to the iSCSI storage plane first
-    if let Err(e) = setup_iscsi() {
-        eprintln!("[!] Initial iSCSI plane failure: {}\nEnsure target service is running.", e);
-        return;
-    }
-
-    // Prompt user for role assignment
-    println!("\nSelect the role this node will execute in the cluster:");
-    println!("1) Dedicated Management Server (MGS)");
-    println!("2) Dedicated Metadata Server (MDS / MDT)");
-    println!("3) Object Storage Server (OSS / OST)");
-    println!("4) Mount Node Cluster Access Point (Lustre Client)");
-    
-    let choice = get_input("\nEnter choice (1-4): ");
-
-    let result = match choice.as_str() {
-        "1" => configure_mgs(),
-        "2" => configure_mds(),
-        "3" => configure_oss(),
-        "4" => configure_client(),
-        _ => Err("Invalid selection criteria received. Exiting...".to_string()),
-    };
-
-    match result {
-        Ok(_) => println!("\n[✓] Role configuration routine executed completely."),
-        Err(e) => eprintln!("\n[!] Configuration aborted due to error: {}", e),
-    }
-}
 
 /// High-level function to orchestrate the entire cluster deployment
 pub fn orchestrate_cluster(config: &ClusterConfig) -> Result<(), String> {
