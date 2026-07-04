@@ -55,10 +55,11 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Clean out old tracking configuration files from previous attempts
 rm -f /etc/yum.repos.d/lustre-*.repo
 
 clear
-banner "Lustre Kernel Module Builder  v2.1"
+banner "Lustre Kernel Module Builder  v2.2"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -94,20 +95,10 @@ RPM_DIR="/tmp/lustre_rpms"
 mkdir -p "$RPM_DIR"
 rm -f "$RPM_DIR"/*.rpm
 
-# Detect pathing by testing server availability dynamically
+# Locked production mirror configuration maps directly to verified archives
+WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.8/server/RPMS/x86_64"
 EPEL_URL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
-
-if curl --output /dev/null --silent --head --fail "https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.9/server/RPMS/x86_64/kernel-headers-4.18.0-513.18.1.el8_lustre.x86_64.rpm"; then
-    WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.9/server/RPMS/x86_64"
-    K_VERSION="4.18.0-513.18.1.el8_lustre.x86_64"
-else
-    # Universal fallback stable vault endpoint
-    WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8/server/RPMS/x86_64"
-    K_VERSION="4.18.0-477.27.1.el8_lustre.x86_64"
-fi
-
-info "Selected mirror source: ${WHAM_URL}"
-info "Selected kernel target: ${K_VERSION}"
+K_VERSION="4.18.0-477.27.1.el8_lustre.x86_64"
 
 declare -a KERNEL_PACKAGES=(
     "kernel-${K_VERSION}.rpm"
@@ -122,7 +113,7 @@ step "Downloading explicit kernel packages with network recovery..."
 for package in "${KERNEL_PACKAGES[@]}"; do
     info "Fetching ${package}..."
     if ! curl -L --fail --retry 5 --connect-timeout 30 -o "$RPM_DIR/$package" "${WHAM_URL}/${package}"; then
-        fail "Failed download stream for ${package}. Mirror path structures may have drifted."
+        fail "Failed download stream for ${package}."
         exit 1
     fi
 done
