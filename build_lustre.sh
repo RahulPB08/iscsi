@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-#  build_lustre.sh — Lustre Kernel Module Builder (Repository Edition)
-#  Compiles and installs Lustre from source on RHEL 8 / Rocky Linux 8.
+#  build_lustre.sh — Automated Lustre Kernel Module Builder
+#  Based on the Official Lustre Wiki Documentation for Rocky Linux 8
 # =============================================================================
 
 # ── Colour palette ────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 clear
-banner "Lustre Kernel Module Builder  v1.2"
+banner "Lustre Kernel Module Builder  v1.3"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -66,10 +66,10 @@ fi
 # ── Phase 1: Build tools ──────────────────────────────────────────────────────
 phase 1 "Installing Build Tools & Development Libraries"
 
-step "Installing core development tools..."
+step "Installing core development tools (git, libtool, flex, bison, wget)..."
 if dnf install -y git libtool flex bison wget 2>&1 | tail -3; then
     ok "Core development tools installed."
-else
+ else
     fail "dnf install failed for core tools."
     exit 1
 fi
@@ -77,58 +77,86 @@ fi
 step "Installing required development libraries..."
 if dnf --enablerepo=devel install -y libmount-devel libyaml-devel libnl3-devel e2fsprogs-devel 2>&1 | tail -3; then
     ok "Development libraries installed."
-else
+ else
     fail "dnf install failed for development libraries."
     exit 1
 fi
 
-# ── Phase 2: Configure Repos & Install Kernel ─────────────────────────────────
-phase 2 "Configuring Repositories & Installing Lustre Kernel"
+# ── Phase 2: Lustre kernel packages ──────────────────────────────────────────
+phase 2 "Downloading & Installing Lustre-Patched Kernel Packages"
 
-step "Adding Whamcloud Lustre Server repository..."
-cat << 'EOF' > /etc/yum.repos.d/lustre-server.repo
-[lustre-server]
-name=Lustre Server Stable
-baseurl=https://downloads.whamcloud.com/public/lustre/latest-release/el8/server/RPMS/x86_64/
-gpgcheck=0
-enabled=1
-EOF
+# Setup temporary path for downloading the isolated packages
+RPM_DIR="/tmp/lustre_rpms"
+mkdir -p "$RPM_DIR"
+rm -f "$RPM_DIR"/*.rpm
 
-step "Adding EPEL repository for system dependencies..."
-dnf install -y epel-release &>/dev/null
+# Target links derived from the document instructions
+WHAM_CI="https://build.whamcloud.com/job/lustre-master/arch=x86_64,build_type=server,distro=el8.9,ib_stack=inkernel/lastSuccessfulBuild/artifact/artifacts/RPMS/x86_64"
+WHAM_FALLBACK="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.8/server/RPMS/x86_64"
+EPEL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
 
-step "Installing Lustre-patched kernel packages via repository..."
-if dnf install -y --enablerepo=lustre-server \
-    kernel \
-    kernel-core \
-    kernel-devel \
-    kernel-headers \
-    kernel-modules \
-    kernel-modules-internal \
-    p7zip quilt; then
+# List of precise files requested by the system architecture setup
+declare -A PACKAGES=(
+    ["kernel"]="kernel-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
+    ["kernel-core"]="kernel-core-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
+    ["kernel-devel"]="kernel-devel-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
+    ["kernel-headers"]="kernel-headers-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
+    ["kernel-modules"]="kernel-modules-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
+    ["kernel-modules-internal"]="kernel-modules-internal-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
+)
+
+step "Downloading kernel packages..."
+for pkg in "${!PACKAGES[@]}"; do
+    filename="${PACKAGES[$pkg]}"
+    info "Fetching $filename..."
+    
+    # Attempt Primary CI download channel
+    if ! wget -q --spider "${WHAM_CI}/${filename}"; then
+        warn "CI path changed for $pkg. Falling back to stable production release channel..."
+        # If the specific beta build number rolled off, bind onto the stable long-term-support equivalent
+        filename=$(echo "$filename" | sed 's/513.18.1.el8_lustre/477.27.1.el8_lustre/g')
+        wget -q -O "$RPM_DIR/$filename" "${WHAM_FALLBACK}/${filename}"
+    else
+        wget -q -O "$RPM_DIR/$filename" "${WHAM_CI}/${filename}"
+    fi
+done
+
+step "Downloading supplemental EPEL packages..."
+# Fetch dependencies safely
+wget -q -O "$RPM_DIR/p7zip.rpm" "${EPEL}/p/p7zip-16.02-20.el8.x86_64.rpm" || wget -q -O "$RPM_DIR/p7zip.rpm" "https://downloads.datastax.com/enterprise/p7zip-16.02-20.el8.x86_64.rpm"
+wget -q -O "$RPM_DIR/quilt.rpm" "${EPEL}/q/quilt-0.66-2.el8.noarch.rpm" || wget -q -O "$RPM_DIR/quilt.rpm" "https://vault.centos.org/centos/8/AppStream/x86_64/os/Packages/quilt-0.66-2.el8.noarch.rpm"
+
+step "Executing local transaction installation for downloaded RPM modules..."
+if dnf localinstall -y "$RPM_DIR"/*.rpm; then
     ok "Lustre-patched kernel packages successfully installed."
 else
-    fail "Repository installation failed."
+    fail "Local DNF package injection failed."
     exit 1
 fi
 
 # ── Phase 3: e2fsprogs repo ───────────────────────────────────────────────────
 phase 3 "Configuring Lustre e2fsprogs Repository"
 
-step "Configuring Lustre-e2fsprogs repository..."
-cat << 'EOF' > /etc/yum.repos.d/lustre-e2fsprogs.repo
-[lustre-e2fsprogs]
+step "Writing repository definitions directly onto /etc/dnf/dnf.conf..."
+if ! grep -q "Lustre-e2fsprogs" /etc/dnf/dnf.conf; then
+    tee -a /etc/dnf/dnf.conf > /dev/null << 'EOF'
+
+[Lustre-e2fsprogs]
 name=Lustre-e2fsprogs
 baseurl=http://downloads.whamcloud.com/public/e2fsprogs/latest/el8/
 gpgcheck=0
 enabled=1
 EOF
+    ok "Lustre-e2fsprogs repository appended successfully."
+ else
+    ok "Lustre-e2fsprogs repository tracking already active."
+fi
 
-step "Upgrading e2fsprogs to Lustre version..."
-if dnf upgrade -y e2fsprogs 2>&1 | tail -3; then
-    ok "e2fsprogs updated."
-else
-    fail "e2fsprogs update failed."
+step "Upgrading e2fsprogs tools to modified Lustre version..."
+if dnf update -y e2fsprogs 2>&1 | tail -3; then
+    ok "e2fsprogs updated successfully."
+ else
+    fail "e2fsprogs update target failed."
     exit 1
 fi
 
@@ -139,13 +167,14 @@ LUSTRE_SRC="/usr/src/lustre-head"
 
 if [[ -d "$LUSTRE_SRC/.git" ]]; then
     warn "Lustre source directory already exists at $LUSTRE_SRC."
-    if confirm "Pull latest changes instead of re-cloning?"; then
+     if confirm "Pull latest changes instead of re-cloning?"; then
         step "Updating existing Lustre repository..."
         git -C "$LUSTRE_SRC" pull && ok "Repository updated." || warn "git pull failed."
     fi
 else
     step "Cloning Lustre repository to $LUSTRE_SRC..."
     mkdir -p "$LUSTRE_SRC"
+    # Overriding SSH requirement to standard HTTPS connection profile
     if git clone https://github.com/lustre/lustre-release.git "$LUSTRE_SRC"; then
         ok "Lustre repository cloned via HTTPS."
     else
@@ -158,38 +187,37 @@ step "Running autogen.sh..."
 cd "$LUSTRE_SRC" || exit 1
 if sh autogen.sh &>/dev/null; then
     ok "autogen.sh completed."
-else
-    fail "autogen.sh failed."
+ else
+    fail "autogen.sh execution failed."
     exit 1
 fi
 
-# Dynamically locate the newly installed Lustre kernel header path
+# Find the installed kernel directory dynamically
 LUSTRE_KERNEL_DIR=$(ls -d /usr/src/kernels/*_lustre* | head -n 1)
 
-step "Running ./configure using directory: ${LUSTRE_KERNEL_DIR}..."
+step "Running ./configure linking headers at: ${LUSTRE_KERNEL_DIR}..."
 if ./configure --with-linux="${LUSTRE_KERNEL_DIR}" 2>&1 | tail -5; then
-    ok "configure completed."
-else
-    fail "configure failed."
+    ok "Configure step passed."
+ else
+    fail "Configure framework validation failed."
     exit 1
 fi
 
 CPUS=$(nproc)
-step "Compiling Lustre with ${CPUS} CPU cores..."
-echo -e "${DIM}     Follow progress with: tail -f /tmp/lustre_build.log${RESET}"
+step "Compiling Lustre engine using ${CPUS} CPU threads..."
 if make -j"${CPUS}" > /tmp/lustre_build.log 2>&1; then
     ok "Compilation complete."
-else
-    fail "make failed. Review /tmp/lustre_build.log for details."
+ else
+    fail "make build processing failed. Review /tmp/lustre_build.log for details."
     tail -20 /tmp/lustre_build.log
     exit 1
 fi
 
 step "Installing Lustre modules and utilities..."
 if make install > /tmp/lustre_install.log 2>&1; then
-    ok "Lustre installed successfully."
-else
-    fail "make install failed."
+    ok "Lustre system software layout installed successfully."
+ else
+    fail "make install target deployment failed."
     exit 1
 fi
 
@@ -201,5 +229,5 @@ echo -e "${GREEN}${BOLD}╚═════════════════�
 echo ""
 
 warn "The system will reboot in 5 seconds to load the new kernel..."
-sleep 5
+ sleep 5
 reboot
