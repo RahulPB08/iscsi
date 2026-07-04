@@ -55,11 +55,12 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Clean up any lingering broken repo configuration files from previous attempts
+# Absolutely remove any broken custom repo definitions causing 404 metadata loops
 rm -f /etc/yum.repos.d/lustre-server.repo
+rm -f /etc/yum.repos.d/lustre-e2fsprogs.repo
 
 clear
-banner "Lustre Kernel Module Builder  v1.4"
+banner "Lustre Kernel Module Builder  v1.5"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -69,7 +70,10 @@ fi
 # ── Phase 1: Build tools ──────────────────────────────────────────────────────
 phase 1 "Installing Build Tools & Development Libraries"
 
-step "Installing core development tools (git, libtool, flex, bison, wget)..."
+step "Cleaning DNF cache configuration..."
+dnf clean all &>/dev/null
+
+step "Installing core development tools..."
 if dnf install -y git libtool flex bison wget 2>&1 | tail -3; then
     ok "Core development tools installed."
 else
@@ -88,49 +92,44 @@ fi
 # ── Phase 2: Lustre kernel packages ──────────────────────────────────────────
 phase 2 "Downloading & Installing Lustre-Patched Kernel Packages"
 
-RPM_DIR="/tmp/lustre_rpms"
-mkdir -p "$RPM_DIR"
-rm -f "$RPM_DIR"/*.rpm
+# Target links explicitly derived from the official wiki document guidelines
+WHAM_BASE="https://build.whamcloud.com/job/lustre-master/arch=x86_64,build_type=server,distro=el8.9,ib_stack=inkernel/lastSuccessfulBuild/artifact/artifacts/RPMS/x86_64"
+EPEL_BASE="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
 
-# Target links derived from the official document configuration layout
-WHAM_CI="https://build.whamcloud.com/job/lustre-master/arch=x86_64,build_type=server,distro=el8.9,ib_stack=inkernel/lastSuccessfulBuild/artifact/artifacts/RPMS/x86_64"
-WHAM_FALLBACK="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.8/server/RPMS/x86_64"
-EPEL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
+K_VER="4.18.0-513.18.1.el8_lustre.x86_64"
 
-declare -A PACKAGES=(
-    ["kernel"]="kernel-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
-    ["kernel-core"]="kernel-core-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
-    ["kernel-devel"]="kernel-devel-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
-    ["kernel-headers"]="kernel-headers-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
-    ["kernel-modules"]="kernel-modules-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
-    ["kernel-modules-internal"]="kernel-modules-internal-4.18.0-513.18.1.el8_lustre.x86_64.rpm"
-)
-
-step "Downloading kernel packages..."
-for pkg in "${!PACKAGES[@]}"; do
-    filename="${PACKAGES[$pkg]}"
-    info "Fetching $filename..."
-    
-    if ! wget -q --spider "${WHAM_CI}/${filename}"; then
-        warn "CI path changed for $pkg. Falling back to stable production release channel..."
-        filename=$(echo "$filename" | sed 's/513.18.1.el8_lustre/477.27.1.el8_lustre/g')
-        wget -q -O "$RPM_DIR/$filename" "${WHAM_FALLBACK}/${filename}"
-    else
-        wget -q -O "$RPM_DIR/$filename" "${WHAM_CI}/${filename}"
-    fi
-done
-
-step "Downloading supplemental EPEL dependencies..."
-wget -q -O "$RPM_DIR/p7zip.rpm" "${EPEL}/p/p7zip-16.02-20.el8.x86_64.rpm" || wget -q -O "$RPM_DIR/p7zip.rpm" "https://downloads.datastax.com/enterprise/p7zip-16.02-20.el8.x86_64.rpm"
-wget -q -O "$RPM_DIR/quilt.rpm" "${EPEL}/q/quilt-0.66-2.el8.noarch.rpm" || wget -q -O "$RPM_DIR/quilt.rpm" "https://vault.centos.org/centos/8/AppStream/x86_64/os/Packages/quilt-0.66-2.el8.noarch.rpm"
-
-step "Executing isolated local transaction installation..."
-# Disabling all external repositories prevents DNF from hitting old metadata errors during parsing
-if dnf localinstall -y --nogpgcheck --disablerepo=* "$RPM_DIR"/*.rpm; then
+step "Installing Lustre kernel packages directly from online URLs..."
+if dnf install -y --nogpgcheck \
+    "${WHAM_BASE}/kernel-${K_VER}.rpm" \
+    "${WHAM_BASE}/kernel-core-${K_VER}.rpm" \
+    "${WHAM_BASE}/kernel-devel-${K_VER}.rpm" \
+    "${WHAM_BASE}/kernel-headers-${K_VER}.rpm" \
+    "${WHAM_BASE}/kernel-modules-${K_VER}.rpm" \
+    "${WHAM_BASE}/kernel-modules-internal-${K_VER}.rpm" \
+    "${EPEL_BASE}/p/p7zip-16.02-20.el8.x86_64.rpm" \
+    "${EPEL_BASE}/q/quilt-0.66-2.el8.noarch.rpm"; then
     ok "Lustre-patched kernel packages successfully installed."
 else
-    fail "Local DNF package injection failed."
-    exit 1
+    warn "Direct CI URL target failed. Attempting stable long-term release channel..."
+    
+    # Fallback to the stable verified release vault matching EL8 architecture
+    WHAM_STABLE="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.8/server/RPMS/x86_64"
+    K_STABLE="4.18.0-477.27.1.el8_lustre.x86_64"
+    
+    if dnf install -y --nogpgcheck \
+        "${WHAM_STABLE}/kernel-${K_STABLE}.rpm" \
+        "${WHAM_STABLE}/kernel-core-${K_STABLE}.rpm" \
+        "${WHAM_STABLE}/kernel-devel-${K_STABLE}.rpm" \
+        "${WHAM_STABLE}/kernel-headers-${K_STABLE}.rpm" \
+        "${WHAM_STABLE}/kernel-modules-${K_STABLE}.rpm" \
+        "${WHAM_STABLE}/kernel-modules-internal-${K_STABLE}.rpm" \
+        "${EPEL_BASE}/p/p7zip-16.02-20.el8.x86_64.rpm" \
+        "${EPEL_BASE}/q/quilt-0.66-2.el8.noarch.rpm"; then
+        ok "Stable release channel packages successfully installed."
+    else
+        fail "All package installation paths failed. Check internet routing to whamcloud.com."
+        exit 1
+    fi
 fi
 
 # ── Phase 3: e2fsprogs repo ───────────────────────────────────────────────────
@@ -152,8 +151,7 @@ else
 fi
 
 step "Upgrading e2fsprogs tools to modified Lustre version..."
-# We explicitly enable only standard base repositories plus our new e2fsprogs definition
-if dnf update -y --disablerepo=* --enablerepo=baseos,appstream,Lustre-e2fsprogs e2fsprogs 2>&1 | tail -3; then
+if dnf update -y e2fsprogs 2>&1 | tail -3; then
     ok "e2fsprogs updated successfully."
 else
     fail "e2fsprogs update target failed."
