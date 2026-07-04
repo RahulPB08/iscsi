@@ -1,78 +1,116 @@
+<div align="center">
+
 # 🌌 Lustre Cluster iSCSI Orchestrator
 
-An automated Rust-based utility to orchestrate and deploy a multi-node **Lustre Parallel Filesystem** cluster using **iSCSI shared block storage**.
+**A Rust-powered automation engine for deploying enterprise-grade distributed storage on a 3-VM VirtualBox cluster.**
 
-This orchestrator handles the entire lifecycle (one-command setup and automated teardown/backoff) of a cluster consisting of:
-1. **iSCSI Target (Storage Node):** Provisions file-backed disks and exports them as SCSI LUNs.
-2. **MGS/MDS Node (Combined):** One node running both the Management Server (MGS) and Metadata Server (MDS / MDT).
-3. **OSS Node (Object Storage Server):** One node running the Object Storage Target (OST) storing raw data chunks.
-4. **Lustre Client:** A client node mounting the unified parallel storage volume.
+[![Rust](https://img.shields.io/badge/Built%20With-Rust-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-Educational-blue?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20RHEL%208%2F9-green?style=flat-square&logo=linux)](https://www.redhat.com/)
+
+*Automates the full lifecycle of iSCSI + LustreFS — from raw disk export to a unified parallel filesystem — without a single manual command.*
+
+</div>
 
 ---
 
-## 🛠️ Cluster Architecture & Data Flow
+## 📖 What Is This Project?
+
+This is an **educational Software-Defined Storage (SDS)** implementation that shows how enterprise storage technologies — **iSCSI** and **LustreFS** — work together to provide centralized, high-performance, network-accessible storage.
+
+Instead of executing dozens of complex Linux commands, you run a **single Rust application** that handles the entire cluster setup interactively.
+
+---
+
+## 🏗️ Cluster Architecture
+
+The system runs on **3 VirtualBox VMs**, each playing a dedicated role:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     iSCSI Storage Plane                         │
+│                                                                 │
+│  ┌─────────────────┐                                            │
+│  │  VM 1           │  LUN 0 ──► MGS/MDS Node                   │
+│  │  iSCSI Target   │  LUN 1 ──► MGS/MDS Node                   │
+│  │  (Storage)      │  LUN 2 ──────────────────► OSS Node        │
+│  └─────────────────┘                                            │
+└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     Lustre Data Plane (LNet/TCP)                 │
+│                                                                 │
+│   ┌────────────┐   ◄──────►   ┌──────────┐                     │
+│   │  VM 2      │              │  VM 3    │                     │
+│   │  MGS / MDS │   ◄──────►   │  OSS/OST │                     │
+│   └────────────┘              └──────────┘                     │
+│          ▲                         ▲                           │
+│          └──────────┬──────────────┘                           │
+│                     ▼                                          │
+│              ┌─────────────┐                                   │
+│              │ Lustre Client│  /mnt/lustre  ← User accesses    │
+│              └─────────────┘    here                          │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ```mermaid
 graph TD
-    subgraph Storage Network [iSCSI Storage Plane]
-        Target[iSCSI Target Node]
-        Target -->|LUN 0: MGS Disk| MGS_MDS[MGS/MDS Node]
-        Target -->|LUN 1: MDT Disk| MGS_MDS
-        Target -->|LUN 2: OST Disk| OSS[OSS Node]
+    subgraph iSCSI ["🔌 iSCSI Storage Plane"]
+        Target["🖥️ VM1 — iSCSI Target Node"]
+        Target -->|"LUN 0: MGS Disk"| MGS_MDS["🖥️ VM2 — MGS/MDS Node"]
+        Target -->|"LUN 1: MDT Disk"| MGS_MDS
+        Target -->|"LUN 2: OST Disk"| OSS["🖥️ VM3 — OSS Node"]
     end
 
-    subgraph Filesystem Network [Lustre Data Plane]
+    subgraph Lustre ["📂 Lustre Data Plane (LNet TCP)"]
         MGS_MDS <-->|LNet TCP| OSS
-        MGS_MDS <-->|LNet TCP| Client[Lustre Client Node]
+        MGS_MDS <-->|LNet TCP| Client["💻 Lustre Client"]
         OSS <-->|LNet TCP| Client
     end
 ```
 
 ---
 
-## 📋 Orchestration Sequence
-
-The deployment runs in a single execution of a function (`orchestrate_cluster`) following a strict dependency sequence:
+## 🔄 Orchestration Sequence
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Target as iSCSI Target
-    participant Server as MGS/MDS Node
-    participant OSS as Object Storage Node (OSS)
-    participant Client as Lustre Client
+    participant T  as 🖥️ iSCSI Target
+    participant M  as 🗂️ MGS/MDS Node
+    participant O  as 📦 OSS Node
+    participant C  as 💻 Lustre Client
 
-    rect rgb(20, 20, 30)
-        Note over Target,Client: Phase 1: Package Prerequisites
-        Target->>Target: Install targetcli-fb & start service
-        Server->>Server: Install open-iscsi / iscsi-initiator-utils & start service
-        OSS->>OSS: Install open-iscsi / iscsi-initiator-utils & start service
+    rect rgb(20, 20, 40)
+        Note over T,C: Phase 1 — Package Prerequisites
+        T->>T: Install targetcli-fb & start service
+        M->>M: Install open-iscsi / iscsi-initiator-utils & start service
+        O->>O: Install open-iscsi / iscsi-initiator-utils & start service
     end
 
-    rect rgb(20, 30, 20)
-        Note over Target: Phase 2: Create iSCSI LUNs
-        Target->>Target: Allocate image files (mgs.img, mdt.img, ost.img)
-        Target->>Target: Register TPG & map LUN 0, 1, 2
-        Target->>Target: Enable writeable demo ACLs
+    rect rgb(20, 40, 20)
+        Note over T: Phase 2 — Create iSCSI LUNs
+        T->>T: Allocate image files (mgs.img, mdt.img, ost.img)
+        T->>T: Register TPG & map LUN 0, LUN 1, LUN 2
+        T->>T: Enable writeable demo ACLs
     end
 
-    rect rgb(30, 20, 20)
-        Note over Server,OSS: Phase 3: Connect Initiator Nodes
-        Server->>Target: Discover & login to iSCSI Target (exposes LUN 0 & LUN 1)
-        OSS->>Target: Discover & login to iSCSI Target (exposes LUN 2)
+    rect rgb(40, 20, 20)
+        Note over M,O: Phase 3 — Connect Initiator Nodes
+        M->>T: Discover & login to iSCSI Target (LUN 0 & LUN 1)
+        O->>T: Discover & login to iSCSI Target (LUN 2)
     end
 
-    rect rgb(30, 30, 20)
-        Note over Server,OSS: Phase 4: Format & Mount Lustre Services
-        Server->>Server: Wait for LUN 0 -> Format --mgs -> Mount /mnt/mgs
-        Server->>Server: Wait for LUN 1 -> Format --mdt --mgsnode=<server_nid> -> Mount /mnt/mdt
-        OSS->>OSS: Wait for LUN 2 -> Format --ost --mgsnode=<server_nid> -> Mount /mnt/ost
+    rect rgb(40, 40, 20)
+        Note over M,O: Phase 4 — Format & Mount Lustre Services
+        M->>M: Format LUN 0 → mkfs.lustre --mgs → Mount /mnt/mgs
+        M->>M: Format LUN 1 → mkfs.lustre --mdt --mgsnode → Mount /mnt/mdt
+        O->>O: Format LUN 2 → mkfs.lustre --ost --mgsnode → Mount /mnt/ost
     end
 
-    rect rgb(20, 30, 30)
-        Note over Client: Phase 5: Client Mount & Verify
-        Client->>Client: Mount lustre filesystem from MGS/MDS NID
-        Client->>Client: Perform write/read verification check
+    rect rgb(20, 40, 40)
+        Note over C: Phase 5 — Client Mount & Verify
+        C->>C: Mount Lustre filesystem from MGS/MDS NID
+        C->>C: Perform write/read verification check
     end
 ```
 
@@ -80,64 +118,182 @@ sequenceDiagram
 
 ## 🚀 Getting Started
 
-### 1. Prerequisites & Network Configuration
-- Ensure all target and initiator nodes can reach each other via IP network.
-- Setup **passwordless SSH access** from the control node (where you compile and run this utility) to all target nodes (MGS/MDS, OSS, Client, and Target).
-  > [!TIP]
-  > You can copy your SSH key to each node using:
-  > ```bash
-  > ssh-copy-id root@<node-ip>
-  > ```
-- The kernel modules and Lustre packages should be pre-installed on the servers. (Refer to `build_lustre.sh` to compile/install Lustre modules if needed).
+### 1. Prerequisites
 
-### 2. Compile the Utility
-Compile the tool using Cargo:
+| Requirement | Details |
+|---|---|
+| **OS** | RHEL 8 / Rocky Linux 8 (or Ubuntu for iSCSI initiator) |
+| **VMs** | 3× VirtualBox VMs with host-only or internal network |
+| **SSH** | Passwordless SSH access from control node to all VMs |
+| **Rust** | `cargo` available (run `rust_install.sh` if needed) |
+| **Lustre** | Kernel modules pre-installed (run `build_lustre.sh` on servers) |
+
+> [!TIP]
+> Set up passwordless SSH to each node before running the orchestrator:
+> ```bash
+> ssh-copy-id root@<node-ip>
+> ```
+
+### 2. Install Dependencies
+
+Run the appropriate helper scripts on each machine:
+
 ```bash
+# On the iSCSI Target node (Ubuntu-based):
+sudo ./iscsi_install.sh
+
+# On MGS/MDS and OSS nodes (RHEL/Rocky-based) — builds Lustre from source:
+sudo ./build_lustre.sh
+
+# On the control node — installs Rust + Cargo:
+./rust_install.sh
+```
+
+> [!IMPORTANT]
+> `build_lustre.sh` takes **10–30 minutes** to compile Lustre from source and **reboots the system** at the end. This is expected behavior.
+
+### 3. Build the Orchestrator
+
+```bash
+cd /path/to/iscsi
 cargo build --release
 ```
 
-### 3. Running the Orchestrator
-Execute the program:
+### 4. Run the Application
+
 ```bash
 sudo ./target/release/iscsi_setup
 ```
 
-From the Main Menu, choose:
-- **`4. Multi-Node Cluster Orchestrator (One-Shot Deploy/Teardown)`**
+You will be greeted with the interactive main menu:
 
-You will be prompted to enter the IP addresses, SSH usernames, mount points, and allocations for all nodes. 
-> [!NOTE]
-> The orchestrator automatically saves your inputs to `cluster_config.json` in the working directory, allowing you to reload and run deployments or teardowns in a single click next time.
+```
+╔══════════════════════════════════════════╗
+║      iSCSI Target Management Utility     ║
+╚══════════════════════════════════════════╝
+
+--- Main Menu ---
+1. Setup a new iSCSI Target        (Local Target Only)
+2. Delete an existing iSCSI Target (Local Target Only)
+3. Interactive Single-Node Lustre Role Setup
+4. Multi-Node Cluster Orchestrator  (One-Shot Deploy/Teardown)
+5. Exit
+```
+
+### 5. One-Shot Cluster Deploy
+
+Select **Option 4 – Multi-Node Cluster Orchestrator**. You will be prompted for:
+
+- IP addresses of all nodes
+- SSH usernames
+- Mount points & disk allocation sizes
+
+The orchestrator saves your inputs to `cluster_config.json` so you can **reload and re-deploy in a single click** on future runs.
 
 ---
 
-## 🔄 Cluster Backoff (Teardown)
+## 🔁 Cluster Teardown (Backoff)
 
-To safely tear down the cluster and clean up all resources, choose option **`2) Cluster Teardown / Backoff (Cleanup)`** within the Orchestration menu.
+Within the Orchestration menu, choose **Option 2 – Cluster Teardown / Backoff**. The teardown runs the following cleanup steps in reverse dependency order:
 
-The teardown process executes the following steps:
-1. **Unmounts** the Lustre client filesystem on the Client node.
-2. **Unmounts** the OST target filesystem on the OSS node.
-3. **Unmounts** the MDT (Metadata Target) filesystem on the combined MGS/MDS node.
-4. **Unmounts** the MGS (Management Target) filesystem on the combined MGS/MDS node.
-5. **Logs out** of the iSCSI targets on the initiator nodes (MGS/MDS, OSS) and clears target records.
-6. **Deletes** target definitions, LUNs, and backstores on the iSCSI Target node via `targetcli`.
-7. **Deletes** the physical image files on the Target node storage directory to free up block storage space.
-8. **Restarts** the target service to apply configurations cleanly.
+| Step | Action |
+|---|---|
+| 1 | Unmount Lustre client filesystem on the Client node |
+| 2 | Unmount OST on the OSS node |
+| 3 | Unmount MDT on the MGS/MDS node |
+| 4 | Unmount MGS on the MGS/MDS node |
+| 5 | Log out of iSCSI targets on all initiator nodes |
+| 6 | Delete iSCSI target definitions, LUNs & backstores |
+| 7 | Delete physical image files to free disk space |
+| 8 | Restart the iSCSI target service cleanly |
+
+---
+
+## 📁 Project Structure
+
+```
+iscsi/
+├── src/
+│   ├── main.rs          # iSCSI target setup, deletion, main menu
+│   └── dcv.rs           # Lustre orchestration, SSH automation, cluster config
+├── build_lustre.sh      # Builds Lustre kernel modules from source (RHEL/Rocky)
+├── iscsi_install.sh     # Installs iSCSI target packages (Ubuntu/Debian)
+├── rust_install.sh      # Installs Rust + Cargo toolchain
+├── test_lustre.sh       # Spins up a single-node loopback Lustre test cluster
+├── Cargo.toml           # Rust project manifest
+└── Readme.md            # This file
+```
 
 ---
 
 ## 🩺 Troubleshooting
 
 > [!WARNING]
-> If a Lustre format command fails, check if the kernel modules (`lustre`, `lnet`) are loaded on that node:
+> If a Lustre format command fails, check whether kernel modules are loaded on that node:
 > ```bash
 > lsmod | grep -E "lustre|lnet"
 > ```
-> If not loaded, run `modprobe lustre` or run the prerequisite package installer in the utility.
+> If not loaded:
+> ```bash
+> modprobe lustre
+> # or run the prerequisite package installer via the utility menu
+> ```
 
 > [!IMPORTANT]
-> Deterministic block path links `/dev/disk/by-path/ip-<target>:3260-iscsi-<target_iqn>-lun-<lun_id>` are used. If they don't appear, verify the iSCSI daemon is active on the initiator nodes:
+> The orchestrator uses deterministic block device paths:
+> ```
+> /dev/disk/by-path/ip-<target>:3260-iscsi-<target_iqn>-lun-<lun_id>
+> ```
+> If these paths don't appear after iSCSI login, verify the daemon is active on the initiator:
 > ```bash
 > systemctl status iscsid
 > ```
+
+> [!NOTE]
+> If `cluster_config.json` exists in the working directory, the orchestrator will ask if you want to reload your previous configuration — saving you from re-entering all IPs and parameters.
+
+---
+
+## 🎓 Educational Concepts Covered
+
+| Concept | Technology |
+|---|---|
+| Network Block Storage | iSCSI (Internet Small Computer Systems Interface) |
+| Storage Targets & LUNs | `targetcli-fb`, `rtslib-fb` |
+| iSCSI Initiators | `open-iscsi`, `iscsiadm` |
+| Distributed Filesystem | LustreFS (MGS, MDS, OSS, OST, Client) |
+| Filesystem Networking | LNet (Lustre Networking) over TCP |
+| Metadata Management | MDT (Metadata Target) on MDS |
+| Object Storage | OST (Object Storage Target) on OSS |
+| Infrastructure Automation | Rust + SSH + `std::process::Command` |
+| Storage-as-Code | Declarative cluster config via JSON |
+
+---
+
+## 🌐 End-User Experience
+
+From the user's perspective, the distributed storage is completely transparent:
+
+```bash
+# After the orchestrator finishes, on any client machine:
+cd /mnt/lustre
+
+mkdir ProjectFiles
+cp ~/report.pdf /mnt/lustre/
+echo "Hello SDS" > notes.txt
+ls -lh
+```
+
+Behind the scenes, iSCSI exports the block devices, MGS/MDS manages the namespace and metadata, and OSS/OST stores the file chunks — all invisible to the end user.
+
+---
+
+## ⚠️ Disclaimer
+
+> This project is intended **solely for educational purposes**. It is a lightweight proof-of-concept for a small VirtualBox cluster. It is **not** intended for production use.
+
+---
+
+<div align="center">
+Built for learning • Powered by Rust • Distributed with Lustre
+</div>
