@@ -55,12 +55,11 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Absolutely remove any broken custom repo definitions causing 404 metadata loops
-rm -f /etc/yum.repos.d/lustre-server.repo
-rm -f /etc/yum.repos.d/lustre-e2fsprogs.repo
+# Clean out old, broken customized tracking configurations completely
+rm -f /etc/yum.repos.d/lustre-*.repo
 
 clear
-banner "Lustre Kernel Module Builder  v1.5"
+banner "Lustre Kernel Module Builder  v1.6"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -70,7 +69,7 @@ fi
 # ── Phase 1: Build tools ──────────────────────────────────────────────────────
 phase 1 "Installing Build Tools & Development Libraries"
 
-step "Cleaning DNF cache configuration..."
+step "Resetting and clearing DNF lookup cache indexes..."
 dnf clean all &>/dev/null
 
 step "Installing core development tools..."
@@ -89,47 +88,39 @@ else
     exit 1
 fi
 
-# ── Phase 2: Lustre kernel packages ──────────────────────────────────────────
-phase 2 "Downloading & Installing Lustre-Patched Kernel Packages"
+# ── Phase 2: Lustre kernel packages via Repository ──────────────────────────
+phase 2 "Configuring Repositories & Deploying Lustre Kernel Module Stack"
 
-# Target links explicitly derived from the official wiki document guidelines
-WHAM_BASE="https://build.whamcloud.com/job/lustre-master/arch=x86_64,build_type=server,distro=el8.9,ib_stack=inkernel/lastSuccessfulBuild/artifact/artifacts/RPMS/x86_64"
-EPEL_BASE="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
+step "Adding EPEL system package engine..."
+dnf install -y epel-release &>/dev/null
 
-K_VER="4.18.0-513.18.1.el8_lustre.x86_64"
+step "Injecting live Whamcloud Lustre repository map..."
+# Dynamically parsing the live package list cuts out hardcoded URL dependencies completely
+cat << 'EOF' > /etc/yum.repos.d/lustre-server.repo
+[lustre-server]
+name=Lustre Server Stable Release
+baseurl=https://downloads.whamcloud.com/public/lustre/latest-2.15-release/el8/server/RPMS/x86_64/
+gpgcheck=0
+enabled=1
+proxy=_none_
+EOF
 
-step "Installing Lustre kernel packages directly from online URLs..."
-if dnf install -y --nogpgcheck \
-    "${WHAM_BASE}/kernel-${K_VER}.rpm" \
-    "${WHAM_BASE}/kernel-core-${K_VER}.rpm" \
-    "${WHAM_BASE}/kernel-devel-${K_VER}.rpm" \
-    "${WHAM_BASE}/kernel-headers-${K_VER}.rpm" \
-    "${WHAM_BASE}/kernel-modules-${K_VER}.rpm" \
-    "${WHAM_BASE}/kernel-modules-internal-${K_VER}.rpm" \
-    "${EPEL_BASE}/p/p7zip-16.02-20.el8.x86_64.rpm" \
-    "${EPEL_BASE}/q/quilt-0.66-2.el8.noarch.rpm"; then
-    ok "Lustre-patched kernel packages successfully installed."
+# Ensure dnf pulls newly introduced package paths immediately
+dnf makecache --disablerepo=* --enablerepo=lustre-server -y &>/dev/null
+
+step "Installing kernel packages from the dynamic repository stream..."
+if dnf install -y --nogpgcheck --enablerepo=lustre-server \
+    kernel \
+    kernel-core \
+    kernel-devel \
+    kernel-headers \
+    kernel-modules \
+    kernel-modules-internal \
+    p7zip quilt; then
+    ok "Lustre-patched kernel packages successfully configured."
 else
-    warn "Direct CI URL target failed. Attempting stable long-term release channel..."
-    
-    # Fallback to the stable verified release vault matching EL8 architecture
-    WHAM_STABLE="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.8/server/RPMS/x86_64"
-    K_STABLE="4.18.0-477.27.1.el8_lustre.x86_64"
-    
-    if dnf install -y --nogpgcheck \
-        "${WHAM_STABLE}/kernel-${K_STABLE}.rpm" \
-        "${WHAM_STABLE}/kernel-core-${K_STABLE}.rpm" \
-        "${WHAM_STABLE}/kernel-devel-${K_STABLE}.rpm" \
-        "${WHAM_STABLE}/kernel-headers-${K_STABLE}.rpm" \
-        "${WHAM_STABLE}/kernel-modules-${K_STABLE}.rpm" \
-        "${WHAM_STABLE}/kernel-modules-internal-${K_STABLE}.rpm" \
-        "${EPEL_BASE}/p/p7zip-16.02-20.el8.x86_64.rpm" \
-        "${EPEL_BASE}/q/quilt-0.66-2.el8.noarch.rpm"; then
-        ok "Stable release channel packages successfully installed."
-    else
-        fail "All package installation paths failed. Check internet routing to whamcloud.com."
-        exit 1
-    fi
+    fail "Repository installation transaction failed. Verify internet routing."
+    exit 1
 fi
 
 # ── Phase 3: e2fsprogs repo ───────────────────────────────────────────────────
@@ -189,6 +180,7 @@ else
     exit 1
 fi
 
+# Dynamically scrape for the freshly deployed target header footprint
 LUSTRE_KERNEL_DIR=$(ls -d /usr/src/kernels/*_lustre* | head -n 1)
 
 step "Running ./configure linking headers at: ${LUSTRE_KERNEL_DIR}..."
