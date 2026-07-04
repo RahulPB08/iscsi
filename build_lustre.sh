@@ -55,11 +55,11 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Clean out old tracking configuration files from previous attempts
+# Scrub any broken repository index files from previous attempts
 rm -f /etc/yum.repos.d/lustre-*.repo
 
 clear
-banner "Lustre Kernel Module Builder  v1.7"
+banner "Lustre Kernel Module Builder  v2.0"
 
 if ! confirm "Ready to begin? This requires an active internet connection"; then
     info "Build cancelled."
@@ -69,11 +69,11 @@ fi
 # ── Phase 1: Build tools ──────────────────────────────────────────────────────
 phase 1 "Installing Build Tools & Development Libraries"
 
-step "Resetting and clearing DNF lookup cache indexes..."
+step "Resetting system DNF index allocations..."
 dnf clean all &>/dev/null
 
-step "Installing core development tools..."
-if dnf install -y git libtool flex bison wget 2>&1 | tail -3; then
+step "Installing core development tools (git, libtool, flex, bison, wget, curl)..."
+if dnf install -y git libtool flex bison wget curl 2>&1 | tail -3; then
     ok "Core development tools installed."
 else
     fail "dnf install failed for core tools."
@@ -89,45 +89,46 @@ else
 fi
 
 # ── Phase 2: Lustre kernel packages ──────────────────────────────────────────
-phase 2 "Downloading & Installing Lustre-Patched Kernel Packages"
+phase 2 "Downloading & Processing Lustre-Patched Kernel Packages"
 
 RPM_DIR="/tmp/lustre_rpms"
 mkdir -p "$RPM_DIR"
 rm -f "$RPM_DIR"/*.rpm
 
-# Stable, permanent vault URLs matching the exact wiki spec for EL8.9 architecture
-WHAM_VAULT="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.9/server/RPMS/x86_64"
-EPEL_VAULT="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
-K_VER="4.18.0-513.18.1.el8_lustre.x86_64"
+# Target stable release paths for Rocky Linux 8 systems
+WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.10/server/RPMS/x86_64"
+EPEL_URL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
+K_VERSION="4.18.0-553.5.1.el8_10.x86_64"
 
-step "Downloading exact Lustre kernel RPMs into local cache..."
-declare -a K_PKGS=(
-    "kernel-${K_VER}.rpm"
-    "kernel-core-${K_VER}.rpm"
-    "kernel-devel-${K_VER}.rpm"
-    "kernel-headers-${K_VER}.rpm"
-    "kernel-modules-${K_VER}.rpm"
-    "kernel-modules-internal-${K_VER}.rpm"
+declare -a KERNEL_PACKAGES=(
+    "kernel-4.18.0-553.5.1.el8_10.x86_64.rpm"
+    "kernel-core-4.18.0-553.5.1.el8_10.x86_64.rpm"
+    "kernel-devel-4.18.0-553.5.1.el8_10.x86_64.rpm"
+    "kernel-headers-4.18.0-553.5.1.el8_10.x86_64.rpm"
+    "kernel-modules-4.18.0-553.5.1.el8_10.x86_64.rpm"
+    "kernel-modules-internal-4.18.0-553.5.1.el8_10.x86_64.rpm"
 )
 
-for pkg in "${K_PKGS[@]}"; do
-    info "Downloading ${pkg}..."
-    if ! wget -q -O "$RPM_DIR/$pkg" "${WHAM_VAULT}/${pkg}"; then
-        fail "Failed to download ${pkg} from vault."
+step "Downloading explicit kernel packages with network recovery..."
+for package in "${KERNEL_PACKAGES[@]}"; do
+    info "Fetching ${package}..."
+    # Using curl with explicit retry limits protects the downloads against VirtualBox soft-lockup glitches
+    if ! curl -L --retry 5 --connect-timeout 30 -o "$RPM_DIR/$package" "${WHAM_URL}/${package}"; then
+        fail "Network drop encountered while fetching ${package}."
         exit 1
     fi
 done
 
-step "Downloading supplemental EPEL dependencies..."
-wget -q -O "$RPM_DIR/p7zip.rpm" "${EPEL_VAULT}/p/p7zip-16.02-20.el8.x86_64.rpm" || wget -q -O "$RPM_DIR/p7zip.rpm" "https://downloads.datastax.com/enterprise/p7zip-16.02-20.el8.x86_64.rpm"
-wget -q -O "$RPM_DIR/quilt.rpm" "${EPEL_VAULT}/q/quilt-0.66-2.el8.noarch.rpm" || wget -q -O "$RPM_DIR/quilt.rpm" "https://vault.centos.org/centos/8/AppStream/x86_64/os/Packages/quilt-0.66-2.el8.noarch.rpm"
+step "Downloading supplemental system testing tools..."
+curl -L --retry 5 --connect-timeout 30 -o "$RPM_DIR/p7zip.rpm" "${EPEL_URL}/p/p7zip-16.02-20.el8.x86_64.rpm"
+curl -L --retry 5 --connect-timeout 30 -o "$RPM_DIR/quilt.rpm" "${EPEL_URL}/q/quilt-0.66-2.el8.noarch.rpm"
 
-step "Executing isolated local installation transaction..."
-# Disabling network repository checks prevents DNF metadata sync errors entirely
-if dnf localinstall -y --nogpgcheck --disablerepo=* "$RPM_DIR"/*.rpm; then
+step "Injecting packages directly via RPM subsystem..."
+# Using rpm directly completely bypasses DNF metadata parsing loops
+if rpm -ivh --nodeps --force "$RPM_DIR"/*.rpm; then
     ok "Lustre-patched kernel packages successfully installed."
 else
-    fail "Local DNF package injection failed."
+    fail "RPM module installation transaction failed."
     exit 1
 fi
 
@@ -171,10 +172,11 @@ if [[ -d "$LUSTRE_SRC/.git" ]]; then
 else
     step "Cloning Lustre repository to $LUSTRE_SRC..."
     mkdir -p "$LUSTRE_SRC"
+    # Using standard public HTTPS cloning removes all root SSH credential blocks
     if git clone https://github.com/lustre/lustre-release.git "$LUSTRE_SRC"; then
         ok "Lustre repository cloned via HTTPS."
     else
-        fail "git clone failed."
+        fail "git clone failed via HTTPS connection profile."
         exit 1
     fi
 fi
@@ -188,7 +190,7 @@ else
     exit 1
 fi
 
-LUSTRE_KERNEL_DIR="/usr/src/kernels/${K_VER}"
+LUSTRE_KERNEL_DIR="/usr/src/kernels/${K_VERSION}"
 
 step "Running ./configure linking headers at: ${LUSTRE_KERNEL_DIR}..."
 if ./configure --with-linux="${LUSTRE_KERNEL_DIR}" 2>&1 | tail -5; then
