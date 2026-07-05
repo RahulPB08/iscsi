@@ -125,6 +125,7 @@ fi
 phase 4 "Cloning & Compiling Lustre from Source"
 
 LUSTRE_SRC="/usr/src/lustre-head"
+LUSTRE_KERNEL_DIR="/usr/src/kernels/${WIKI_KERNEL_VER}"
 
 step "Setting up source destination at $LUSTRE_SRC..."
 mkdir -p "$LUSTRE_SRC"
@@ -133,7 +134,6 @@ if [[ -d "$LUSTRE_SRC/.git" ]]; then
     warn "Lustre source tracking database already active."
     git -C "$LUSTRE_SRC" pull
 else
-    # Utilizing public HTTPS fallback structure since SSH profile requires keys setup
     if git clone https://github.com/lustre/lustre-release.git "$LUSTRE_SRC"; then
         ok "Lustre repository successfully pulled down."
     else
@@ -145,34 +145,38 @@ fi
 cd "$LUSTRE_SRC" || exit 1
 
 step "Executing configuration layout builds (autogen.sh)..."
-if sh autogen.sh &>/dev/null; then
+if sh autogen.sh > /tmp/lustre_autogen.log 2>&1; then
     ok "autogen system pass completed."
 else
-    fail "Autogen evaluation pipeline broke."
+    fail "Autogen evaluation pipeline broke. Check /tmp/lustre_autogen.log"
     exit 1
 fi
 
-step "Running framework configurations..."
-if ./configure 2>&1 | tail -5; then
+step "Running framework configurations linking headers at ${LUSTRE_KERNEL_DIR}..."
+# Added explicit path to the kernel devel headers
+if ./configure --with-linux="${LUSTRE_KERNEL_DIR}" > /tmp/lustre_config.log 2>&1; then
     ok "Configure system checks cleared."
 else
-    fail "Configuration verification failed."
+    fail "Configuration verification failed. Reviewing last 20 lines of /tmp/lustre_config.log:"
+    tail -20 /tmp/lustre_config.log
     exit 1
 fi
 
-step "Compiling core engine targets..."
-if make; then
+CPUS=$(nproc)
+step "Compiling core engine targets using ${CPUS} threads..."
+if make -j"${CPUS}" > /tmp/lustre_build.log 2>&1; then
     ok "Compilation complete."
 else
-    fail "Lustre engine compilation failed."
+    fail "Lustre engine compilation failed. Reviewing last 20 lines of /tmp/lustre_build.log:"
+    tail -20 /tmp/lustre_build.log
     exit 1
 fi
 
 step "Installing built targets across operating system subsystems..."
-if make install; then
+if make install > /tmp/lustre_install.log 2>&1; then
     ok "Lustre system software layout deployed successfully."
 else
-    fail "Target runtime system deployment operations failed."
+    fail "Target runtime system deployment operations failed. Check /tmp/lustre_install.log"
     exit 1
 fi
 
