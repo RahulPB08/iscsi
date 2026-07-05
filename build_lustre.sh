@@ -1,17 +1,12 @@
 #!/bin/bash
 # =============================================================================
 #  build_lustre.sh — Automated Lustre Kernel Module Builder (Wiki Compliant)
-#  Multi-Os Version Dynamic Target Mapping Loop Edition
+#  Updated to strictly match the Lustre Wiki Virtualbox/Rocky 8.9 Guide
 # =============================================================================
 
-BOLD='\033[1m'
-RESET='\033[0m'
-CYAN='\033[1;36m'
-GREEN='\033[1;32m'
-YELLOW='\033[1;33m'
-RED='\033[1;31m'
-BLUE='\033[1;34m'
-DIM='\033[2m'
+BOLD='\033[1m'; RESET='\033[0m'; CYAN='\033[1;36m'
+GREEN='\033[1;32m'; YELLOW='\033[1;33m'; RED='\033[1;31m'
+BLUE='\033[1;34m'; DIM='\033[2m'
 
 banner() {
     echo ""
@@ -29,7 +24,7 @@ phase() {
     echo ""
 }
 
-step()   { echo -e "${CYAN}  ▶  $*${RESET}"; }
+step()   { echo -e "${CYAN}  ▶  ${RESET}${BOLD}$*${RESET}"; }
 ok()     { echo -e "${GREEN}  ✔  $*${RESET}"; }
 warn()   { echo -e "${YELLOW}  ⚠  $*${RESET}"; }
 fail()   { echo -e "${RED}  ✖  $*${RESET}"; }
@@ -40,43 +35,38 @@ confirm() {
     local default="${2:-y}"
     local answer hint
     [[ "$default" == "y" ]] && hint="[Y/n]" || hint="[y/N]"
-    echo ""
     read -rp "$(echo -e "${YELLOW}  ?  ${prompt} ${hint}: ${RESET}")" answer
     answer="${answer:-$default}"
     [[ "${answer,,}" == "y" ]]
 }
 
+# Ensure script is run as root
 if [[ $EUID -ne 0 ]]; then
     fail "This script must be run as root."
     info "Please run: sudo ./build_lustre.sh"
     exit 1
 fi
 
-rm -f /etc/yum.repos.d/lustre-*.repo
-
 clear
-banner "Lustre Kernel Module Builder  v2.8"
+banner "Lustre Wiki VirtualBox Builder v3.0"
 
-if ! confirm "Ready to begin? This requires an active internet connection"; then
+if ! confirm "Ready to begin the Wiki-compliant setup?"; then
     info "Build cancelled."
     exit 0
 fi
 
-# ── Phase 1: Build tools ──────────────────────────────────────────────────────
+# ── Phase 1: Dependencies ─────────────────────────────────────────────────────
 phase 1 "Installing Build Tools & Development Libraries"
 
-step "Resetting system DNF index allocations..."
-dnf clean all &>/dev/null
-
-step "Installing core development tools (git, libtool, flex, bison, wget, curl)..."
-if dnf install -y git libtool flex bison wget curl 2>&1 | tail -3; then
+step "Installing pre-requisite software tools..."
+if dnf install -y git libtool flex bison wget 2>&1 | tail -3; then
     ok "Core development tools installed."
 else
     fail "dnf install failed for core tools."
     exit 1
 fi
 
-step "Installing required development libraries..."
+step "Installing required development libraries from 'devel' repository..."
 if dnf --enablerepo=devel install -y libmount-devel libyaml-devel libnl3-devel e2fsprogs-devel 2>&1 | tail -3; then
     ok "Development libraries installed."
 else
@@ -84,73 +74,24 @@ else
     exit 1
 fi
 
-# ── Phase 2: Lustre kernel packages ──────────────────────────────────────────
-phase 2 "Downloading & Processing Lustre-Patched Kernel Packages"
+# ── Phase 2: Kernel Packages ──────────────────────────────────────────────────
+phase 2 "Installing Lustre-Patched Kernel Packages"
 
-RPM_DIR="/tmp/lustre_rpms"
-mkdir -p "$RPM_DIR"
-rm -f "$RPM_DIR"/*.rpm
+# Specific kernel version defined by the Wiki tutorial matrix
+WIKI_KERNEL_VER="4.18.0-513.18.1.el8_lustre.x86_64"
+JENKINS_BASE_URL="https://build.whamcloud.com/job/lustre-master/arch=x86_64,build_type=server,distro=el8.9,ib_stack=inkernel/lastSuccessfulBuild/artifact/artifacts/RPMS/x86_64"
 
-EPEL_URL="https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64/Packages"
-
-# Array testing structures matching both Rocky 8.9 and updated Rocky 8.10 routes
-OS_PATHS=("el8.10" "el8.9" "el8")
-K_VERSIONS=("4.18.0-553.5.1.el8_10.x86_64" "4.18.0-513.18.1.el8_lustre.x86_64" "4.18.0-477.27.1.el8_lustre.x86_64")
-
-WHAM_URL=""
-SELECTED_K_VER=""
-
-step "Scanning Whamcloud server indices for active target path alignment..."
-for i in "${!OS_PATHS[@]}"; do
-    TEST_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/${OS_PATHS[$i]}/server/RPMS/x86_64"
-    TEST_FILE="kernel-headers-${K_VERSIONS[$i]}.rpm"
-    
-    if curl --output /dev/null --silent --head --fail "${TEST_URL}/${TEST_FILE}"; then
-        WHAM_URL="${TEST_URL}"
-        SELECTED_K_VER="${K_VERSIONS[$i]}"
-        break
-    fi
-done
-
-if [[ -z "$WHAM_URL" ]]; then
-    # Hardcoded safety fallback to verified el8.10 stream if testing probes fail
-    WHAM_URL="https://downloads.whamcloud.com/public/lustre/lustre-2.15.5/el8.10/server/RPMS/x86_64"
-    SELECTED_K_VER="4.18.0-553.5.1.el8_10.x86_64"
-fi
-
-info "Matched Base Mirror Path: ${WHAM_URL}"
-info "Matched Target Kernel Release: ${SELECTED_K_VER}"
-
-declare -a KERNEL_PACKAGES=(
-    "kernel-${SELECTED_K_VER}.rpm"
-    "kernel-core-${SELECTED_K_VER}.rpm"
-    "kernel-devel-${SELECTED_K_VER}.rpm"
-    "kernel-headers-${SELECTED_K_VER}.rpm"
-    "kernel-modules-${SELECTED_K_VER}.rpm"
-    "kernel-modules-internal-${SELECTED_K_VER}.rpm"
-)
-
-step "Downloading explicit kernel packages with network recovery..."
-for package in "${KERNEL_PACKAGES[@]}"; do
-    info "Fetching ${package}..."
-    if ! curl -L --fail --retry 5 --connect-timeout 30 -o "$RPM_DIR/$package" "${WHAM_URL}/${package}"; then
-        fail "Failed download stream for ${package}."
-        exit 1
-    fi
-done
-
-step "Downloading supplemental system testing tools..."
-curl -L --fail --retry 5 --connect-timeout 30 -o "$RPM_DIR/p7zip.rpm" "${EPEL_URL}/p/p7zip-16.02-20.el8.x86_64.rpm" || \
-    curl -L --fail -o "$RPM_DIR/p7zip.rpm" "https://downloads.datastax.com/enterprise/p7zip-16.02-20.el8.x86_64.rpm"
-
-curl -L --fail --retry 5 --connect-timeout 30 -o "$RPM_DIR/quilt.rpm" "${EPEL_URL}/q/quilt-0.66-2.el8.noarch.rpm" || \
-    curl -L --fail -o "$RPM_DIR/quilt.rpm" "https://vault.centos.org/centos/8/AppStream/x86_64/os/Packages/quilt-0.66-2.el8.noarch.rpm"
-
-step "Injecting packages directly via native RPM subsystem (Bypassing DNF)..."
-if rpm -ivh --nodeps --force "$RPM_DIR"/*.rpm; then
-    ok "Lustre-patched kernel packages successfully installed."
+step "Installing specific Lustre-LDISKFS targeted kernel distribution packages..."
+if dnf install -y \
+    "${JENKINS_BASE_URL}/kernel-${WIKI_KERNEL_VER}.rpm" \
+    "${JENKINS_BASE_URL}/kernel-core-${WIKI_KERNEL_VER}.rpm" \
+    "${JENKINS_BASE_URL}/kernel-devel-${WIKI_KERNEL_VER}.rpm" \
+    "${JENKINS_BASE_URL}/kernel-headers-${WIKI_KERNEL_VER}.rpm" \
+    "${JENKINS_BASE_URL}/kernel-modules-${WIKI_KERNEL_VER}.rpm" \
+    "${JENKINS_BASE_URL}/kernel-modules-internal-${WIKI_KERNEL_VER}.rpm" 2>&1 | tail -5; then
+    ok "Lustre-patched kernel packages successfully registered."
 else
-    fail "RPM module installation transaction failed."
+    fail "Failed to resolve or install targeted kernel packages from Whamcloud Jenkins artifacts."
     exit 1
 fi
 
@@ -163,20 +104,20 @@ if ! grep -q "Lustre-e2fsprogs" /etc/dnf/dnf.conf; then
 
 [Lustre-e2fsprogs]
 name=Lustre-e2fsprogs
-baseurl=http://downloads.whamcloud.com/public/e2fsprogs/latest/el8/
+baseurl=http://downloads.whamcloud.com/public/e2fsprogs/latest/el$releasever/
 gpgcheck=0
 enabled=1
 EOF
-    ok "Lustre-e2fsprogs repository appended successfully."
+    ok "Lustre-e2fsprogs repository tracking appended to dnf.conf."
 else
-    ok "Lustre-e2fsprogs repository tracking already active."
+    ok "Lustre-e2fsprogs configuration block already active."
 fi
 
-step "Upgrading e2fsprogs tools to modified Lustre version..."
-if dnf update -y --disablerepo=* --enablerepo=baseos,appstream,Lustre-e2fsprogs e2fsprogs 2>&1 | tail -3; then
-    ok "e2fsprogs updated successfully."
+step "Upgrading e2fsprogs binaries to modified Lustre version..."
+if dnf update -y e2fsprogs 2>&1 | tail -3; then
+    ok "e2fsprogs patched successfully."
 else
-    fail "e2fsprogs update target failed."
+    fail "e2fsprogs patching step failed."
     exit 1
 fi
 
@@ -185,64 +126,60 @@ phase 4 "Cloning & Compiling Lustre from Source"
 
 LUSTRE_SRC="/usr/src/lustre-head"
 
+step "Setting up source destination at $LUSTRE_SRC..."
+mkdir -p "$LUSTRE_SRC"
+
 if [[ -d "$LUSTRE_SRC/.git" ]]; then
-    warn "Lustre source directory already exists at $LUSTRE_SRC."
-    if confirm "Pull latest changes instead of re-cloning?"; then
-        step "Updating existing Lustre repository..."
-        git -C "$LUSTRE_SRC" pull && ok "Repository updated." || warn "git pull failed."
-    fi
+    warn "Lustre source tracking database already active."
+    git -C "$LUSTRE_SRC" pull
 else
-    step "Cloning Lustre repository to $LUSTRE_SRC..."
-    mkdir -p "$LUSTRE_SRC"
+    # Utilizing public HTTPS fallback structure since SSH profile requires keys setup
     if git clone https://github.com/lustre/lustre-release.git "$LUSTRE_SRC"; then
-        ok "Lustre repository cloned via HTTPS."
+        ok "Lustre repository successfully pulled down."
     else
-        fail "git clone failed via HTTPS connection profile."
+        fail "Failed to mirror remote git repository source maps."
         exit 1
     fi
 fi
 
-step "Running autogen.sh..."
 cd "$LUSTRE_SRC" || exit 1
+
+step "Executing configuration layout builds (autogen.sh)..."
 if sh autogen.sh &>/dev/null; then
-    ok "autogen.sh completed."
+    ok "autogen system pass completed."
 else
-    fail "autogen.sh execution failed."
+    fail "Autogen evaluation pipeline broke."
     exit 1
 fi
 
-LUSTRE_KERNEL_DIR="/usr/src/kernels/${SELECTED_K_VER}"
-
-step "Running ./configure linking headers at: ${LUSTRE_KERNEL_DIR}..."
-if ./configure --with-linux="${LUSTRE_KERNEL_DIR}" 2>&1 | tail -5; then
-    ok "Configure step passed."
+step "Running framework configurations..."
+if ./configure 2>&1 | tail -5; then
+    ok "Configure system checks cleared."
 else
-    fail "Configure framework validation failed."
+    fail "Configuration verification failed."
     exit 1
 fi
 
-CPUS=$(nproc)
-step "Compiling Lustre engine using ${CPUS} CPU threads..."
-if make -j"${CPUS}" > /tmp/lustre_build.log 2>&1; then
+step "Compiling core engine targets..."
+if make; then
     ok "Compilation complete."
 else
-    fail "make build processing failed. Review /tmp/lustre_build.log for details."
-    tail -20 /tmp/lustre_build.log
+    fail "Lustre engine compilation failed."
     exit 1
 fi
 
-step "Installing Lustre modules and utilities..."
-if make install > /tmp/lustre_install.log 2>&1; then
-    ok "Lustre system software layout installed successfully."
+step "Installing built targets across operating system subsystems..."
+if make install; then
+    ok "Lustre system software layout deployed successfully."
 else
-    fail "make install target deployment failed."
+    fail "Target runtime system deployment operations failed."
     exit 1
 fi
 
 # ── Complete ──────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${GREEN}${BOLD}║   ✔  BUILD COMPLETE — Lustre is installed!               ║${RESET}"
+echo -e "${GREEN}${BOLD}║    ✔  BUILD COMPLETE — Lustre is installed!               ║${RESET}"
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════╝${RESET}"
 echo ""
 
