@@ -1,4 +1,4 @@
-# 🌌 Lustre Cluster iSCSI Orchestrator
+# 🌌 LustreFS on Network Block Storage
 
 An automated Rust-based utility to orchestrate and deploy a multi-node **Lustre Parallel Filesystem** cluster using **iSCSI shared block storage**.
 
